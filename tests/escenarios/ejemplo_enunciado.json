@@ -1,0 +1,11 @@
+{
+  "config": {"num_cpus": 1, "marcos_fisicos": 16, "tam_pagina": 256,
+             "bloques_disco": 200, "tam_bloque": 512, "cache_bloques": 8},
+  "usuarios": ["cliente_a", "cliente_b"],
+  "semaforos": {"bd": 1},
+  "catalogo": {
+    "web": {"memoria_bytes": 1024, "cuota_marcos": 3, "prioridad": 1,
+            "programa": [["CPU", 2], ["ES", 40], ["CPU", 1]]}
+  },
+  "llegadas": [{"tick": 0, "programa": "web", "usuario": "cliente_a"}]
+}
