@@ -44,13 +44,15 @@
 - **Limitaciones:** FCFS no reduce el desplazamiento; la caché aún no está implementada; `procesar_disco()` no libera procesos.
 
 ### 2.4 Asignación de bloques de archivos (`archivos.py`)
-- **Algoritmo elegido:**
+> Estado: Prototipo 1 (avance). Se completa en el Prototipo 2.
+- **Algoritmo elegido:** asignación indexada (prevista). En el Prototipo 1 todavía no se reservan bloques: eso llega con `fs_escribir` en el Prototipo 2.
+- **Decisiones del Prototipo 1:** el árbol de archivos son diccionarios anidados y cada directorio guarda a sus hijos por nombre. `archivos` no importa `kernel`, `procesos` ni `disco`, y lleva su propio mapa de bloques (una lista de ocupado/libre). Los permisos son los de Unix (propietario, grupo y otros) y `admin` los ignora. `formatear_disco` borra también los usuarios, salvo `admin`. La raíz se crea con modo `777`, porque el enunciado no tiene una función para cambiar el propietario *(por confirmar)*. En `fs_info`, `bloques` es la lista de bloques del archivo, y en `fs_estado_disco`, `huecos_libres` es la cantidad de grupos de bloques libres seguidos *(por confirmar)*. Función adicional: `reiniciar(config)`, que `kernel.iniciar_sistema` debe llamar *(pendiente de conectar en el kernel)*.
 - **Alternativas evaluadas (mínimo 2):**
-  1. 
-  2. 
-- **Experimento y métricas comparativas:**
-- **Justificación frente a los requisitos (RF1):**
-- **Limitaciones:**
+  1. Asignación contigua *(por evaluar)*
+  2. Asignación enlazada *(por evaluar)*
+- **Experimento y métricas comparativas:** *(pendiente, Prototipo 2)* misma secuencia de creación, crecimiento y borrado de archivos con semilla fija para cada política; métricas: `huecos_libres` y escrituras que fallan por falta de espacio.
+- **Justificación frente a los requisitos (RF1):** *(pendiente)* En el Prototipo 1 ya se cumple para directorios: sin permiso se lanza `ErrorPermiso`, y bloques usados más bloques libres es igual a bloques totales porque ambos se cuentan sobre el mismo mapa.
+- **Limitaciones:** faltan `fs_escribir`, `fs_leer`, `fs_eliminar`, `fs_chmod` y `fs_enlace_simbolico`; solo acepta rutas absolutas y no interpreta `.` ni `..`; los directorios no ocupan bloques.
 
 ### 2.5 Sincronización e interbloqueos (`sincronizacion.py`)
 - **Mecanismo y estrategia elegidos:**
@@ -69,6 +71,9 @@
 
 - `tests/test_disco.py` (18 pruebas): fórmula de servicio, orden FCFS, cancelar, reiniciar, validaciones y métricas.
 - `tests/test_disco_kernel_simulado.py` (6 pruebas): con un kernel simulado, `("ES", 40)` bloquea al proceso 5 ticks.
+- `tests/test_archivos.py` (23 pruebas): formateo, usuarios, directorios, permisos por propietario, grupo y otros, y conteo de bloques y huecos.
+- `tests/test_escenarios.py` (24 pruebas): valida el formato de los escenarios y mide RP1, RP2 y RP3 sobre ellos usando solo funciones del enunciado. 4 están marcadas como fallo esperado hasta que `kernel.cargar_escenario` lea el formato del enunciado.
+- Escenarios en `tests/escenarios/` (formato del enunciado): `ejemplo_enunciado.json` (el ejemplo del enunciado), `base.json` (mezcla de web, respaldo y analítica; RP1), `inanicion.json` (un servicio web cada 4 ticks frente a una analítica de baja prioridad; RP2) y `carga_cpu.json` (tres analíticas y cinco web; RP3). En los escenarios propios la prioridad 0 es la más alta, como en el planificador del equipo.
 
 ---
 
@@ -77,3 +82,4 @@
 *(Declarar explícitamente si se utilizaron herramientas de IA durante el proyecto, en qué partes y confirmar que todo el equipo comprende y puede explicar cada línea del código.)*
 
 - **Integrante 2:** `disco.py` y sus pruebas se desarrollaron con asistencia de Claude (Anthropic). El integrante las revisó, ejecutó y adaptó, y puede explicar cada línea.
+- **Integrante 3:** `archivos.py`, los escenarios JSON y sus pruebas se desarrollaron con asistencia de Claude (Anthropic). El integrante los revisó y ejecutó, y puede explicar cada línea.
