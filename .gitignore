@@ -27,3 +27,5 @@ htmlcov/
 # Sistema operativo
 Thumbs.db
 .DS_Store
+
+.antigravity/
