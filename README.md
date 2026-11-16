@@ -71,6 +71,24 @@ pip install -r requirements.txt
 
 ---
 
+## Consola interactiva (tiempo real)
+
+Puedes iniciar la consola interactiva en vivo de NimbusDC para ejecutar comandos y monitorear la simulación en tiempo real:
+
+```bash
+# Iniciar la consola interactiva
+python main.py
+# o mediante el módulo
+python -m minidc
+
+# Iniciar cargando un escenario directamente
+python main.py tests/escenarios/base.json
+```
+
+Dentro de la consola puedes escribir `help` para ver la lista de comandos disponibles (`ps`, `run`, `tick`, `top`, `kill`, `load`, etc.) o `salir` para cerrar la sesión.
+
+---
+
 ## Ejecución de pruebas
 
 Para ejecutar toda la suite de pruebas desde la raíz del repositorio:
@@ -115,6 +133,7 @@ python -m pytest -v
 
 ## Equipo
 
-- *(Integrante 1 — rol / módulos)*
-- *(Integrante 2 — rol / módulos)*
-- *(Integrante 3 — rol / módulos)*
+- Santiago Ardila — Integrante 1 (Núcleo y Procesos)
+- Ramiro Pinchao — Integrante 2 (Memoria y Disco)
+- Santiago Ramirez — Integrante 3 (Sistema de Archivos y Escenarios)
+- Kenneth Rodriguez — Integrante 4 (Consola, Infraestructura y Pruebas)

@@ -200,6 +200,22 @@ def test_consola_historial():
 
 
 # ---------------------------------------------------------------- errores y casos borde
+def test_consola_comando_help():
+    salida = consola.ejecutar_comando("help")
+    assert not salida.startswith("Error:")
+    assert "Comandos disponibles" in salida
+    assert "ps" in salida
+    assert "top" in salida
+
+
+def test_consola_comando_load():
+    ruta = os.path.join(os.path.dirname(__file__), "escenarios", "base.json")
+    salida = consola.ejecutar_comando(f"load {ruta}")
+    assert not salida.startswith("Error:")
+    assert "Escenario cargado exitosamente" in salida
+    assert "web" in salida
+
+
 def test_consola_comando_desconocido():
     salida = consola.ejecutar_comando("comando_inexistente")
     assert salida.startswith("Error:")

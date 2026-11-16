@@ -255,7 +255,7 @@ def ejecutar_comando(linea: str, usuario: str = "admin") -> str:
     _historiales.setdefault(usuario, []).append(linea_limpia)
 
     try:
-        partes = shlex.split(linea_limpia)
+        partes = shlex.split(linea_limpia.replace("\\", "/"))
     except ValueError as e:
         return f"Error: sintaxis de comando inválida ({e})"
 
