@@ -133,7 +133,7 @@ python -m pytest -v
 
 ## Equipo
 
-- Santiago Ardila — Integrante 1 (Núcleo y Procesos)
-- Ramiro Pinchao — Integrante 2 (Memoria y Disco)
-- Santiago Ramirez — Integrante 3 (Sistema de Archivos y Escenarios)
-- Kenneth Rodriguez — Integrante 4 (Consola, Infraestructura y Pruebas)
+- Kenneth Rodriguez — Integrante 1 (Núcleo y Procesos)
+- Santiago Ramirez — Integrante 2 (Memoria y Disco)
+- Santiago Ardila — Integrante 3 (Sistema de Archivos y Escenarios)
+- Ramiro Pinchao — Integrante 4 (Consola, Infraestructura y Pruebas)
