@@ -67,19 +67,19 @@
 
 ## 3. Lista de pruebas propias
 
-*(Documentar las pruebas implementadas en `tests/`, escenarios probados y cómo verifican los requisitos RP1–RP3, RM1–RM3, RD1, RF1, RS1–RS2.)*
-
 - `tests/test_disco.py` (18 pruebas): fórmula de servicio, orden FCFS, cancelar, reiniciar, validaciones y métricas.
 - `tests/test_disco_kernel_simulado.py` (6 pruebas): con un kernel simulado, `("ES", 40)` bloquea al proceso 5 ticks.
 - `tests/test_archivos.py` (23 pruebas): formateo, usuarios, directorios, permisos por propietario, grupo y otros, y conteo de bloques y huecos.
-- `tests/test_escenarios.py` (24 pruebas): valida el formato de los escenarios y mide RP1, RP2 y RP3 sobre ellos usando solo funciones del enunciado. 4 están marcadas como fallo esperado hasta que `kernel.cargar_escenario` lea el formato del enunciado.
+- `tests/test_escenarios.py` (24 pruebas): valida el formato de los escenarios y mide RP1, RP2 y RP3 sobre ellos usando solo funciones del enunciado. Todas pasando tras la integración del catálogo y usuarios en `kernel.cargar_escenario`.
+- `tests/test_prototipo1.py` (17 pruebas): pruebas unitarias y de integración para `kernel.py` y `procesos.py`, verificando el ciclo de 4 pasos, el planificador MLFQ con aging, preempción y el cumplimiento formal de RP1, RP2 y RP3.
+- `tests/test_consola.py` (21 pruebas): pruebas para `consola.py`, verificando comandos `ps`, `kill`, `run` (usando el catálogo del escenario), `tick`, `top`, `whoami`, `pwd`, `cd`, el aislamiento de `historial` y `directorio_actual` por usuario, las variantes de Windows (`tasklist`, `taskkill`) y el formato obligatorio de errores (`Error:...`).
+- `tests/test_estructura.py` (9 pruebas): verificación de importaciones públicas, jerarquía de excepciones en `errores.py` y coincidencia exacta de firmas obligatorias.
 - Escenarios en `tests/escenarios/` (formato del enunciado): `ejemplo_enunciado.json` (el ejemplo del enunciado), `base.json` (mezcla de web, respaldo y analítica; RP1), `inanicion.json` (un servicio web cada 4 ticks frente a una analítica de baja prioridad; RP2) y `carga_cpu.json` (tres analíticas y cinco web; RP3). En los escenarios propios la prioridad 0 es la más alta, como en el planificador del equipo.
 
 ---
 
 ## 4. Declaración de uso de herramientas de IA e integridad académica
 
-*(Declarar explícitamente si se utilizaron herramientas de IA durante el proyecto, en qué partes y confirmar que todo el equipo comprende y puede explicar cada línea del código.)*
-
 - **Integrante 2:** `disco.py` y sus pruebas se desarrollaron con asistencia de Claude (Anthropic). El integrante las revisó, ejecutó y adaptó, y puede explicar cada línea.
 - **Integrante 3:** `archivos.py`, los escenarios JSON y sus pruebas se desarrollaron con asistencia de Claude (Anthropic). El integrante los revisó y ejecutó, y puede explicar cada línea.
+- **Integrante 4:** `consola.py`, infraestructura de pruebas y validación del Prototipo 1 se desarrollaron con asistencia de herramientas de IA. El integrante las revisó, ejecutó y adaptó, y puede explicar cada línea.

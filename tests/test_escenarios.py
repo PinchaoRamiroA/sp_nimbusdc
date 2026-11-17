@@ -169,8 +169,7 @@ def test_ejemplo_del_enunciado_termina_en_8_ticks():
     assert [p["estado"] for p in procesos.listar_procesos()] == ["TERMINADO"]
 
 
-# ------------------------------------------------ pendiente del núcleo (P2)
-@pytest.mark.xfail(reason="kernel.cargar_escenario aún no lee el formato del enunciado")
+# ------------------------------------------------ carga directa en el kernel
 @pytest.mark.parametrize("nombre", ESCENARIOS)
 def test_el_kernel_carga_el_escenario_directamente(nombre):
     escenario = leer_escenario(nombre)

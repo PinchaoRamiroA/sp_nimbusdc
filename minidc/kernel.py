@@ -9,6 +9,7 @@ from minidc.errores import ErrorNoExiste, ErrorSistema
 _reloj = 0
 _config = {}
 _llegadas_pendientes = []
+_catalogo = {}
 
 
 def iniciar_sistema(config: dict) -> None:
@@ -18,12 +19,18 @@ def iniciar_sistema(config: dict) -> None:
     ``num_cpus``, ``marcos_fisicos``, ``tam_pagina``, ``bloques_disco``,
     ``tam_bloque``, ``cache_bloques``.
     """
-    global _reloj, _config, _llegadas_pendientes
+    global _reloj, _config, _llegadas_pendientes, _catalogo
     _config = dict(config)
     _reloj = 0
     _llegadas_pendientes = []
+    _catalogo = {}
     disco.reiniciar(_config)
     procesos.reiniciar(_config)
+    try:
+        from minidc import archivos
+        archivos.reiniciar(_config)
+    except Exception:
+        pass
 
 
 def apagar_sistema() -> dict:
@@ -115,37 +122,90 @@ def cargar_escenario(ruta_json: str) -> None:
 
     iniciar_sistema(config)
 
+    global _catalogo
+    _catalogo = dict(datos.get("catalogo", {}))
+
     # Inicialización de usuarios y semáforos si están presentes
     for u in datos.get("usuarios", []):
         try:
             from minidc import archivos
-            archivos.crear_usuario(u["nombre"], u.get("grupo", "usuarios"))
+            if isinstance(u, dict):
+                archivos.crear_usuario(u["nombre"], u.get("grupo", "usuarios"))
+            elif isinstance(u, str):
+                archivos.crear_usuario(u, "usuarios")
         except (ErrorSistema, NotImplementedError, AttributeError):
             pass
 
-    for s in datos.get("semaforos", []):
-        try:
-            from minidc import sincronizacion
-            sincronizacion.crear_semaforo(s["nombre"], s.get("valor_inicial", 1))
-        except (ErrorSistema, NotImplementedError, AttributeError):
-            pass
+    sem_data = datos.get("semaforos", {})
+    if isinstance(sem_data, dict):
+        for s_nom, s_val in sem_data.items():
+            try:
+                from minidc import sincronizacion
+                sincronizacion.crear_semaforo(s_nom, s_val)
+            except (ErrorSistema, NotImplementedError, AttributeError):
+                pass
+    elif isinstance(sem_data, list):
+        for s in sem_data:
+            try:
+                from minidc import sincronizacion
+                sincronizacion.crear_semaforo(s["nombre"], s.get("valor_inicial", 1))
+            except (ErrorSistema, NotImplementedError, AttributeError):
+                pass
 
     # Procesar llegadas
     llegadas = datos.get("llegadas", datos.get("procesos", []))
     _llegadas_pendientes = []
     for item in llegadas:
         tick_prog = item.get("tick", 0)
+        prog_raw = item.get("programa")
+        nom_raw = item.get("nombre")
+
+        if isinstance(prog_raw, str) and prog_raw in _catalogo:
+            serv = _catalogo[prog_raw]
+            nom = nom_raw if nom_raw is not None else prog_raw
+            prog = serv["programa"]
+            mem_b = item.get("memoria_bytes", serv.get("memoria_bytes", 4096))
+            c_marcos = item.get("cuota_marcos", serv.get("cuota_marcos", 4))
+            prio = item.get("prioridad", serv.get("prioridad", 0))
+        elif isinstance(prog_raw, list):
+            nom = nom_raw if nom_raw is not None else "proceso"
+            prog = prog_raw
+            mem_b = item.get("memoria_bytes", 4096)
+            c_marcos = item.get("cuota_marcos", 4)
+            prio = item.get("prioridad", 0)
+        else:
+            nom = nom_raw if nom_raw is not None else str(prog_raw)
+            prog = []
+            mem_b = item.get("memoria_bytes", 4096)
+            c_marcos = item.get("cuota_marcos", 4)
+            prio = item.get("prioridad", 0)
+
+        llegada_dict = {
+            "tick": tick_prog,
+            "nombre": nom,
+            "usuario": item.get("usuario", "admin"),
+            "programa": prog,
+            "memoria_bytes": mem_b,
+            "cuota_marcos": c_marcos,
+            "prioridad": prio,
+        }
+
         if tick_prog <= 0:
             procesos.crear_proceso(
-                nombre=item["nombre"],
-                usuario=item.get("usuario", "admin"),
-                programa=item["programa"],
-                memoria_bytes=item.get("memoria_bytes", 4096),
-                cuota_marcos=item.get("cuota_marcos", 4),
-                prioridad=item.get("prioridad", 0),
+                nombre=llegada_dict["nombre"],
+                usuario=llegada_dict["usuario"],
+                programa=llegada_dict["programa"],
+                memoria_bytes=llegada_dict["memoria_bytes"],
+                cuota_marcos=llegada_dict["cuota_marcos"],
+                prioridad=llegada_dict["prioridad"],
             )
         else:
-            _llegadas_pendientes.append(item)
+            _llegadas_pendientes.append(llegada_dict)
+
+
+def obtener_catalogo() -> dict:
+    """Devuelve una copia del catálogo de servicios cargado en el escenario."""
+    return dict(_catalogo)
 
 
 def resumen_sistema() -> dict:
