@@ -24,24 +24,92 @@
 - **Limitaciones:**
 
 ### 2.2 Gestión de memoria virtual (`memoria.py`)
-- **Algoritmo elegido:**
+> Estado: Prototipo 2 (completo). Responsable: Integrante 2.
+- **Algoritmo elegido:** paginación por demanda con **reemplazo local** y política del **Reloj (segunda oportunidad)**, el plan del equipo de la guía conceptual (sección 5.7). Un proceso nunca tiene más de `cuota_marcos` páginas residentes y solo saca páginas **suyas**.
+- **Cómo funciona:**
+  - Traducción con las herramientas de la guía: `ceil(memoria_bytes / tam_pagina)` páginas por proceso y `pagina, desplazamiento = divmod(direccion, tam_pagina)`.
+  - **Fallo de página:** (1) si el proceso tiene cuota libre y hay un marco libre, lo usa; (2) si no, la víctima es una de sus propias páginas, elegida por el Reloj: la manecilla recorre las páginas residentes del proceso; si `referenciada` es `True` la pone en `False` y sigue; si es `False`, la reemplaza; (3) única excepción: si el proceso no tiene ninguna página residente y no hay marcos libres, no podría avanzar, y toma un marco del proceso con más marcos. Solo ocurre cuando la suma de las cuotas supera los marcos físicos.
+  - Una página `modificada` que sale de memoria cuenta como escritura al swap (`escrituras_a_swap`).
+  - **RM3:** la dirección se valida (`0 <= dir < memoria_bytes`) **antes** de tocar cualquier estado. Si está fuera, lanza `ErrorMemoria` y no cambian ni las tablas, ni los marcos, ni las métricas. `procesos` captura la excepción y termina solo al proceso infractor.
+  - **Fragmentación interna** (guía 5.4): por proceso, `ceil(bytes / tam_pagina) * tam_pagina - bytes`, sumada para todos los procesos con memoria registrada.
+  - **Hiperpaginación:** se diagnostica cuando más de la mitad de los últimos 32 accesos fueron fallos (mínimo 16 accesos). La reacción (RM2) llega en el Prototipo 3.
+- **Integración con los otros módulos:**
+  - `memoria` no importa `kernel`. Si le preguntan por un PID que nadie registró, lee su `memoria_bytes` y su `cuota_marcos` de `procesos` (import diferido), así que no depende de que `crear_proceso` la llame. Esto resuelve el pendiente de la guía 5.11 ("hay que acordar cómo le llegan el tamaño y la cuota"). También existe `registrar_proceso(pid, memoria_bytes, cuota_marcos)` para registrarlo de forma explícita.
+  - Cada registro recuerda de qué proceso de `procesos` salió. Si el kernel se reinicia y los PID vuelven a empezar, el nuevo PID 1 no hereda la memoria del anterior: se registra de nuevo. Un acceso de un proceso TERMINADO lanza `ErrorNoExiste` sin tocar las métricas.
+  - `estado_memoria` cuenta a todos los procesos vivos, aunque todavía no hayan accedido a memoria.
+  - El bloqueo de 5 ticks por fallo de página lo aplica `procesos`; `memoria` solo informa `fallo_pagina`.
+  - Cumple "un proceso que termina libera su memoria" aunque el proceso termine solo: antes de asignar marcos y al reportar su estado, libera los procesos que `procesos` ya marcó como TERMINADO.
+  - Funciones adicionales: `reiniciar(config)` (la llama `kernel.iniciar_sistema`), `registrar_proceso` y `_fijar_politica` (solo para experimentos).
 - **Alternativas evaluadas (mínimo 2):**
-  1. 
-  2. 
+  1. **LRU, local.** Sale la página usada hace más tiempo.
+  2. **FIFO, local.** Sale la página cargada hace más tiempo, aunque se esté usando mucho.
+  3. **Reparto de marcos (decisión de diseño).** Se probaron dos variantes que quitan marcos a otros procesos: "el que no encuentra marco libre se lo quita al que tiene más" (41–48 % de fallos en sobrecarga, fallos en cadena) y una asignación proporcional `marcos × cuota / Σcuotas` (33–38 %). Se descartaron porque rompen el reemplazo local que el equipo eligió (guía 5.8 y 5.12: un proceso no debe sacar páginas de otro). Con cuotas que caben en memoria no hay diferencia.
 - **Experimento y métricas comparativas:**
+  - **Validación con la guía (5.7):** las tres políticas reproducen exactamente los números de la guía: secuencia clásica de 20 accesos con 3 marcos → LRU 12, Reloj 14 y FIFO 15 fallos; anomalía de Belady → FIFO y Reloj pasan de 9 a 10 fallos con 4 marcos y LRU baja de 10 a 8; y el ejemplo del Reloj paso a paso.
+  - **Carga del proyecto:** `python informe/experimentos/experimento_memoria.py`. 5 semillas fijas y la misma carga para las tres políticas. Cada servicio accede con localidad: en cada fase, el 85 % de los accesos va a un conjunto "caliente" de `cuota − 1` páginas y el 15 % a cualquier página; el 30 % son escrituras. Los procesos se intercalan (un acceso de cada uno por turno). Se miden `tasa_fallos`, `reemplazos` y `escrituras_a_swap`.
+
+  | Carga | Reloj | LRU | FIFO |
+  |---|---|---|---|
+  | Nominal (Σcuotas = 15 ≤ 16 marcos), tasa de fallos promedio | 0,189 | **0,171** | 0,202 |
+  | Nominal, rango en las 5 semillas | 0,165–0,203 | 0,141–0,182 | 0,179–0,215 |
+  | Sobrecarga (Σcuotas = 22 > 16 marcos), promedio | 0,362 | **0,342** | 0,369 |
+
+  - **Con el kernel completo** (rama `feature/nucleo-prototipo2` del Integrante 1 + este módulo): el escenario `tests/escenarios/memoria.json` termina con **16,5 % de fallos** y los 16 marcos libres al final.
 - **Justificación frente a los requisitos (RM1–RM3):**
+  - **RM1:** 16,5 % con el kernel completo y como máximo 20,3 % en las 5 semillas: por debajo del 25 %.
+  - **RM3:** la validación previa garantiza que un acceso inválido no modifica nada, y el reemplazo local impide que un proceso le saque páginas a otro. Lo comprueban `test_acceso_invalido_no_cambia_ningun_estado`, `test_reemplazo_local_no_quita_marcos_a_otro_proceso` y `test_rm3_proceso_real_fuera_de_su_espacio_no_afecta_a_otros`.
+  - **Por qué el Reloj y no LRU:** LRU tuvo 1,8 puntos menos de fallos, pero ambos cumplen RM1 con margen. El Reloj es el plan del equipo y usa el bit `referenciada` de la tabla de páginas del enunciado; LRU exacto requiere guardar el instante de cada acceso, algo que el hardware real no hace. LRU queda implementado: cambiarlo es una línea (`_POLITICA`).
 - **Limitaciones:**
+  - Con memoria sobrecomprometida la tasa sube a ~36 % y no cumple RM1: es el caso de hiperpaginación que el Prototipo 3 debe atender (RM2).
+  - El Reloj, igual que FIFO, puede sufrir la anomalía de Belady (lo muestra la prueba `test_anomalia_de_belady`).
+  - La excepción de "sin páginas propias" quita un marco a otro proceso; solo ocurre si Σcuotas > marcos.
+  - El swap no se modela como dispositivo: las escrituras al swap solo se cuentan, no consumen ticks de disco (duda abierta de la guía 7.5).
+  - La carga del experimento tiene localidad diseñada (85 % de accesos a `cuota − 1` páginas calientes); el resultado depende de esa localidad. El experimento intercala un acceso por proceso y no modela el bloqueo de 5 ticks; con reemplazo local y cuotas que caben no cambia la tasa (el kernel completo da el mismo 16,5 %).
+  - El escenario `memoria.json` usa `("MEM", dir)` de dos elementos, como define el enunciado, sin indicar escritura; por eso con el kernel `escrituras_a_swap` es 0, aunque el experimento sí mide escrituras.
 
 ### 2.3 Planificación de disco y caché (`disco.py`)
-> Estado: Prototipo 1. Se actualiza en el Prototipo 2.
-- **Algoritmo elegido:** FCFS (provisional, línea base). Objetivo para el Prototipo 2: C-LOOK, según el experimento.
-- **Decisiones del Prototipo 1:** el tiempo de servicio es `1 + abs(cabezal - bloque) // 10`. `disco` no importa `procesos` ni `kernel`: el kernel llama a `avanzar_tick()` y recibe los PID cuya E/S terminó. Funciones adicionales: `reiniciar`, `avanzar_tick` y `cancelar_solicitudes`. Un bloque u operación inválidos lanzan `ErrorSistema` *(por confirmar)*.
+> Estado: Prototipo 2 (completo). Responsable: Integrante 2.
+- **Algoritmo elegido:** **C-LOOK**, el plan del equipo (guía 6.5), más una **caché LRU de bloques**.
+  - C-LOOK (guía 6.8): `_elegir_siguiente(cola, cabezal)` devuelve la solicitud de menor bloque **mayor o igual** al cabezal; si no hay ninguna, la de menor bloque de todas (el salto de regreso). A igual bloque, la más antigua.
+  - Detalle anti-inanición: en el mismo bloque donde está el cabezal solo se atienden en esta pasada las solicitudes que ya existían cuando el cabezal llegó; las que llegan después esperan a la siguiente pasada. Sin esto, un flujo constante de solicitudes a ese bloque dejaría esperando para siempre a las demás (lo encontró la revisión independiente). `_elegir_siguiente` recibe para eso un tercer parámetro opcional, `id_limite`.
+  - Caché: guarda los últimos `cache_bloques` bloques leídos o escritos (LRU con `OrderedDict`). Las decisiones que la guía 6.7 deja abiertas: una lectura de un bloque en caché es un **acierto**, no usa el cabezal (no suma desplazamiento) y termina en el siguiente tick, en paralelo con la solicitud en servicio; las escrituras siempre van al disco (escritura directa) y dejan el bloque en caché; `info_cache` cuenta solo lecturas.
+- **Decisiones que se mantienen del Prototipo 1:** tiempo de servicio `1 + abs(cabezal - bloque) // 10`; `disco` no importa `procesos` ni `kernel` (el kernel llama a `avanzar_tick()` en el paso 2 del tick y recibe los PID cuya E/S terminó); iniciar y descontar el servicio en la misma llamada para no perder ticks; un bloque u operación inválidos lanzan `ErrorSistema`; `procesar_disco()` atiende todo de una vez sin consumir ticks ni liberar procesos (sirve para medir). El salto de C-LOOK cuenta como desplazamiento, porque el cabezal sí se mueve (guía 6.5).
+- **Funciones adicionales:** `reiniciar`, `avanzar_tick`, `cancelar_solicitudes`, `estadisticas_espera()` (espera máxima y promedio, desde que se encola hasta que termina, guía 6.6) y `_fijar_politica` (solo experimentos). `metricas_disco()` conserva exactamente las 3 claves del enunciado.
 - **Alternativas evaluadas (mínimo 2):**
-  1. SSTF *(por evaluar)*
-  2. C-LOOK *(por evaluar)*
-- **Experimento y métricas comparativas:** *(pendiente, Prototipo 2)* misma carga con semilla fija para cada política; métricas: `desplazamiento_total` y espera máxima.
-- **Justificación frente a los requisitos (RD1):** *(pendiente)* FCFS es la línea base de RD1. En el Prototipo 1 no pierde ticks entre solicitudes, lo que protege RP3.
-- **Limitaciones:** FCFS no reduce el desplazamiento; la caché aún no está implementada; `procesar_disco()` no libera procesos.
+  1. **FCFS** (línea base de RD1; era la política del Prototipo 1).
+  2. **SSTF** (la más cercana al cabezal, hacia cualquier lado).
+  3. **C-LOOK con límite de espera (descartada).** Se probó atender primero a la solicitud que llevara 100 ticks o más en cola. En la prueba de carga (experimento D) empeoró mucho el sistema: con 0,75 solicitudes por tick la espera máxima pasó de 108 a 1880 ticks, porque al atender por antigüedad el disco vuelve a recorridos largos (como FCFS) y la cola se desborda. C-LOOK no la necesita: en cada pasada el cabezal llega hasta la última solicitud y vuelve, así que ninguna espera más de una vuelta.
+- **Experimento y métricas comparativas:** `python informe/experimentos/experimento_disco.py`, con 5 semillas fijas.
+  - **Validación con la guía (6.5):** con el cabezal en 53 y los bloques `98, 183, 37, 122, 14, 124, 65, 67`, el módulo da el mismo orden y desplazamiento que la tabla de la guía: FCFS 640, SSTF 236 y C-LOOK 322.
+  - **A) Lote** (cabezal inicial al azar y 40 solicitudes con `procesar_disco`): ahorro frente a FCFS de 84,4–87,8 % con C-LOOK y de 89,5–92,6 % con SSTF. Con todas las solicitudes presentes desde el principio no hay llegadas nuevas, así que este caso favorece a SSTF y no mide la espera; por eso el experimento principal es el B.
+  - **B) Dinámico** (escenario de respaldo, 10 procesos × 8 E/S, con el kernel real):
+
+    | Semilla | Ahorro C-LOOK | Ahorro SSTF | Espera máx. C-LOOK | Espera máx. SSTF | Espera máx. FCFS |
+    |---|---|---|---|---|---|
+    | 1 | 62,2 % | 66,1 % | 62 | 81 | 110 |
+    | 2 | 55,0 % | 58,5 % | 50 | 84 | 98 |
+    | 3 | 55,4 % | 65,1 % | 64 | 44 | 109 |
+    | 4 | 58,4 % | 61,7 % | 51 | 53 | 85 |
+    | 5 | 61,6 % | 70,5 % | 57 | 69 | 95 |
+
+  - **C) Inanición:** una solicitud al bloque 190 mientras llega una solicitud cercana (bloques 0–30) por tick. **SSTF nunca la atiende**; FCFS tarda 21 ticks y **C-LOOK 22 ticks**.
+  - **D) Carga creciente** (llegadas al azar durante 2000 ticks; espera máxima, peor de 5 semillas):
+
+    | Solicitudes por tick | 0,1 | 0,2 | 0,4 | 0,6 | 0,7 | 0,8 | 0,9 |
+    |---|---|---|---|---|---|---|---|
+    | FCFS | 112 | 1104 | 4106 | 6871 | 8250 | 9849 | 11234 |
+    | SSTF | 53 | 76 | 117 | 161 | 186 | 186 | 222 |
+    | C-LOOK | 56 | 63 | 65 | 93 | 104 | 126 | 211 |
+- **Justificación frente a los requisitos (RD1):**
+  - Ahorro del 55–62 % frente a FCFS en el escenario dinámico (se pide ≥ 30 %) y espera máxima de 50–64 ticks (se pide ≤ 200).
+  - SSTF mueve un poco menos el cabezal, pero puede dejar una solicitud esperando para siempre (experimento C) y su espera máxima crece más rápido con la carga (experimento D). C-LOOK mantiene la espera más baja hasta 0,8 solicitudes por tick.
+  - El escenario `tests/escenarios/disco.json` lo comprueba con el kernel completo (`test_rd1_escenario_de_disco_con_el_kernel`).
+- **Limitaciones:**
+  - RD1 se cumple hasta unas 0,8 solicitudes por tick. Con 0,9 o más el disco está sobrecargado (la cola crece sin parar) y ningún planificador garantiza las 200 ticks.
+  - `estadisticas_espera` solo mide solicitudes terminadas; por eso el experimento B se detiene con error si un escenario no termina, en vez de reportar números parciales.
+  - Un acierto de caché termina en 1 tick en vez de seguir la fórmula de servicio. Es la razón de ser de la caché, pero hay que tenerlo en cuenta al comparar tiempos.
+  - La caché solo atiende la E/S de procesos (`("ES", bloque)`); `archivos.py` no pasa por ella.
+  - El tiempo de servicio no distingue lectura de escritura.
 
 ### 2.4 Asignación de bloques de archivos (`archivos.py`)
 > Estado: Prototipo 1 (avance). Se completa en el Prototipo 2.
@@ -67,19 +135,93 @@
 
 ## 3. Lista de pruebas propias
 
-- `tests/test_disco.py` (18 pruebas): fórmula de servicio, orden FCFS, cancelar, reiniciar, validaciones y métricas.
+- `tests/test_disco.py` (41 pruebas): fórmula de servicio, cancelar, reiniciar, validaciones y métricas (Prototipo 1); orden C-LOOK con salto, desempate por antigüedad, ahorro ≥ 30 % frente a FCFS en 5 semillas, que C-LOOK no deje esperando a una solicitud lejana, `estadisticas_espera`, el ejemplo de la guía con el cabezal en 53 (FCFS, SSTF y C-LOOK), que un flujo al bloque del cabezal no deje esperando a otra, validación de la configuración, y caché LRU: aciertos sin mover el cabezal, expulsión LRU, escritura directa, capacidad 0, cancelación y reinicio (Prototipo 2).
+- `tests/test_memoria.py` (36 pruebas): traducción y formato de `tabla_paginas`, copias, `ErrorMemoria` fuera del espacio (RM3) sin cambiar ningún estado, cuota de marcos, víctima del Reloj, LRU y FIFO, reemplazo local estricto y su única excepción, escrituras al swap, `liberar_memoria`, `estado_memoria` (fragmentación interna sumada), `metricas_memoria`, reinicio, hiperpaginación y los ejemplos de la guía (Reloj paso a paso, secuencia clásica de 20 accesos y anomalía de Belady).
+- `tests/test_requisitos_memoria_disco.py` (12 pruebas): formato de los escenarios `memoria.json` y `disco.json`; RM1 con los accesos del escenario y con el kernel completo (se omite mientras `procesos` no ejecute `MEM`); RM3 con procesos reales; liberación de memoria al terminar (por `terminar_proceso` y al terminar solo); RD1 con el kernel completo (C-LOOK ≤ 70 % del desplazamiento de FCFS y espera ≤ 200); y regresiones de la revisión independiente (PID reutilizado tras reiniciar el kernel, acceso de un proceso TERMINADO y fragmentación de procesos que aún no acceden).
 - `tests/test_disco_kernel_simulado.py` (6 pruebas): con un kernel simulado, `("ES", 40)` bloquea al proceso 5 ticks.
 - `tests/test_archivos.py` (23 pruebas): formateo, usuarios, directorios, permisos por propietario, grupo y otros, y conteo de bloques y huecos.
 - `tests/test_escenarios.py` (24 pruebas): valida el formato de los escenarios y mide RP1, RP2 y RP3 sobre ellos usando solo funciones del enunciado. Todas pasando tras la integración del catálogo y usuarios en `kernel.cargar_escenario`.
 - `tests/test_prototipo1.py` (17 pruebas): pruebas unitarias y de integración para `kernel.py` y `procesos.py`, verificando el ciclo de 4 pasos, el planificador MLFQ con aging, preempción y el cumplimiento formal de RP1, RP2 y RP3.
 - `tests/test_consola.py` (21 pruebas): pruebas para `consola.py`, verificando comandos `ps`, `kill`, `run` (usando el catálogo del escenario), `tick`, `top`, `whoami`, `pwd`, `cd`, el aislamiento de `historial` y `directorio_actual` por usuario, las variantes de Windows (`tasklist`, `taskkill`) y el formato obligatorio de errores (`Error:...`).
 - `tests/test_estructura.py` (9 pruebas): verificación de importaciones públicas, jerarquía de excepciones en `errores.py` y coincidencia exacta de firmas obligatorias.
-- Escenarios en `tests/escenarios/` (formato del enunciado): `ejemplo_enunciado.json` (el ejemplo del enunciado), `base.json` (mezcla de web, respaldo y analítica; RP1), `inanicion.json` (un servicio web cada 4 ticks frente a una analítica de baja prioridad; RP2) y `carga_cpu.json` (tres analíticas y cinco web; RP3). En los escenarios propios la prioridad 0 es la más alta, como en el planificador del equipo.
+- Escenarios en `tests/escenarios/` (formato del enunciado): `ejemplo_enunciado.json` (el ejemplo del enunciado), `base.json` (mezcla de web, respaldo y analítica; RP1), `inanicion.json` (un servicio web cada 4 ticks frente a una analítica de baja prioridad; RP2) y `carga_cpu.json` (tres analíticas y cinco web; RP3). En los escenarios propios la prioridad 0 es la más alta, como en el planificador del equipo. Prototipo 2: `memoria.json` (analítica, dos web y respaldo con accesos `("MEM", dir)` con localidad; Σcuotas = 15 ≤ 16 marcos; RM1) y `disco.json` (10 procesos de respaldo con 8 E/S a bloques al azar; RD1). Ambos se regeneran con `--guardar` desde los scripts de `informe/experimentos/`.
 
 ---
 
 ## 4. Declaración de uso de herramientas de IA e integridad académica
 
-- **Integrante 2:** `disco.py` y sus pruebas se desarrollaron con asistencia de Claude (Anthropic). El integrante las revisó, ejecutó y adaptó, y puede explicar cada línea.
+- **Integrante 2:** `disco.py`, `memoria.py`, sus pruebas, los escenarios `memoria.json` y `disco.json` y los scripts de `informe/experimentos/` se desarrollaron con asistencia de Claude (Anthropic). El integrante los revisó, ejecutó y adaptó, y puede explicar cada línea.
 - **Integrante 3:** `archivos.py`, los escenarios JSON y sus pruebas se desarrollaron con asistencia de Claude (Anthropic). El integrante los revisó y ejecutó, y puede explicar cada línea.
 - **Integrante 4:** `consola.py`, infraestructura de pruebas y validación del Prototipo 1 se desarrollaron con asistencia de herramientas de IA. El integrante las revisó, ejecutó y adaptó, y puede explicar cada línea.
+
+---
+
+## 5. Bitácora del proyecto
+
+> Registro cronológico de lo que hizo cada integrante, las decisiones tomadas y su evidencia (commits, pruebas, experimentos). Sirve de base para redactar el informe final de forma coherente con el proceso.
+
+### Prototipo 1 (entrega: 17 de noviembre)
+- **Integrante 2 — disco simple (PR #1):** `disco.py` con FCFS, tiempo de servicio `1 + distancia // 10` y avance por tick (`avanzar_tick`), sin importar `procesos` ni `kernel`. Pruebas unitarias (18) y prueba de contrato con un kernel simulado (6).
+
+### Prototipo 2 (entrega: 23 de noviembre)
+
+#### 22 de noviembre (1) — Integrante 2: primera implementación de memoria y disco (rama `feature/memoria-disco-completo`)
+- **Análisis inicial:**
+  - `memoria.py` tenía solo las 7 firmas, sin implementar.
+  - `disco.py` seguía en FCFS y sin caché.
+  - La instrucción `("MEM", dir)` la integra el Integrante 1 en `feature/nucleo-prototipo2`, que todavía no estaba fusionada a `main`.
+  - Se decidió trabajar sobre `main` para que el PR contenga solo los archivos del Integrante 2, y que `memoria` funcione con o sin esa rama (registro automático leyendo `procesos`).
+- **Primera versión de `memoria.py`:**
+  - Paginación por demanda, `ErrorMemoria` validado antes de modificar el estado (RM3), `reiniciar`, `registrar_proceso`, liberación automática de los procesos TERMINADO e hiperpaginación por ventana.
+  - Decisiones iniciales según el experimento:
+    1. Se descartó quitarle marcos al proceso con más marcos (fallos en cadena: 41–48 %).
+    2. Se agregó asignación proporcional.
+    3. Se eligió LRU (menos fallos que el Reloj y FIFO en las 10 corridas).
+- **Primera versión de `disco.py`:**
+  - C-LOOK con límite de espera de 100 ticks, caché LRU de lectura con escritura directa y `estadisticas_espera()`.
+  - El experimento de inanición mostró que SSTF puede no atender nunca una solicitud lejana: argumento para C-LOOK.
+- **Escenarios y experimentos:** `tests/escenarios/memoria.json` y `disco.json`; `informe/experimentos/experimento_memoria.py` y `experimento_disco.py`, con 5 semillas.
+
+#### 22 de noviembre (2) — Integrante 2: revisión contra el enunciado y la guía, y pruebas de robustez
+- **Revisión contra la guía conceptual y el cuaderno de herramientas.** Se encontraron y corrigieron estas incoherencias:
+  1. **Reemplazo local.** La asignación proporcional le quitaba páginas a otros procesos, lo que la guía (5.6, 5.8, 5.12) marca como error en una política local. Se pasó a reemplazo local estricto; la única excepción es un proceso sin ninguna página residente cuando no hay marcos libres. En el escenario nominal no cambia la tasa de fallos.
+  2. **Política del Reloj.** La guía fija el plan del equipo: Reloj local, comparado contra FIFO y LRU. LRU fue 1,8 puntos mejor, pero ambos cumplen RM1 con margen; se adoptó el Reloj (coherencia con el plan, uso del bit `referenciada` y realismo) y LRU queda como alternativa evaluada.
+  3. **Fragmentación interna.** Se contaba solo si la última página estaba en memoria; la guía (5.4, pregunta 15) la define sumada para todos los procesos. Corregido.
+  4. **Herramientas del cuaderno.** La traducción usa `math.ceil` y `divmod`, como en la sección 6 del cuaderno.
+  5. **Contrato del disco.** `_elegir_siguiente(cola, cabezal)` recuperó su firma de la guía (6.8), que es la que se modifica en vivo en la sustentación.
+- **Prueba de carga del disco (experimento D) y decisión:** el límite de espera de 100 ticks colapsaba el disco con carga alta (con 0,75 solicitudes por tick la espera máxima pasó de 108 a 1880 ticks), porque al atender por antigüedad el disco vuelve a recorridos largos. **Se eliminó**: C-LOOK puro tiene la menor espera máxima hasta 0,8 solicitudes por tick y no deja solicitudes sin atender.
+- **Pruebas que validan contra la guía:** secuencia clásica de 20 accesos (LRU 12, Reloj 14, FIFO 15 fallos), anomalía de Belady, ejemplo del Reloj paso a paso y ejemplo de disco con el cabezal en 53 (FCFS 640, SSTF 236, C-LOOK 322). Los resultados coinciden exactamente con la guía.
+- **Pruebas de robustez (fuera del repositorio):**
+  - 300 corridas aleatorias de 400 operaciones sobre `memoria`: después de cada operación se cumplen las invariantes (marcos libres + ocupados = totales, ningún marco repetido, nadie supera su cuota, un acceso inválido no cambia nada).
+  - 100 corridas aleatorias de 600 ticks sobre `disco`, con cancelaciones y caché: todas las solicitudes terminan y la espera máxima fue de 71 ticks.
+  - Cada archivo de pruebas pasa solo (`-W error`); los módulos usan solo la biblioteca estándar y no usan la hora real; los escenarios se regeneran idénticos byte a byte.
+
+#### 22 de noviembre (3) — Integrante 2: revisión independiente y correcciones finales
+- **Revisión independiente** (un revisor sin acceso a las conclusiones previas, contra el enunciado y la guía). Confirmó que la lógica central es correcta: 900 corridas aleatorias por módulo sin romper invariantes, los ejemplos de la guía reproducidos y las firmas y claves exactas. Encontró casos borde que se corrigieron, cada uno con su prueba de regresión:
+  1. **PID reutilizado tras reiniciar el kernel.** Como el kernel de `main` aún no llama a `memoria.reiniciar`, el nuevo PID 1 heredaba el tamaño y los marcos del anterior (rompía RM3). Ahora cada registro recuerda de qué proceso salió y se registra de nuevo si cambió.
+  2. **Inanición en C-LOOK con un flujo al mismo bloque del cabezal.** Se probó primero "estrictamente mayor que el cabezal", pero con varias solicitudes pendientes al mismo bloque atendía una por pasada y la espera máxima con carga 0,6 subió de 93 a 244 ticks. Se adoptó la regla correcta: en el bloque del cabezal se atienden las que ya existían al llegar, y las nuevas esperan a la siguiente pasada.
+  3. **Proceso TERMINADO que accede a memoria directamente:** lanzaba `KeyError`. Ahora lanza `ErrorNoExiste` sin tocar las métricas.
+  4. **`estado_memoria` no contaba los procesos que aún no accedían.** Ahora cuenta a todos los procesos vivos (fragmentación de todos, guía 5.4).
+  5. **Validaciones menores:** `encolar_solicitud_disco` rechaza bloques `bool` y `reiniciar` valida la configuración del disco.
+  6. **Experimentos más honestos:**
+     - El experimento A arranca con el cabezal al azar (antes, con el cabezal en 0, inflaba el ahorro de C-LOOK).
+     - El experimento B se detiene con error si un escenario no termina.
+     - Los scripts siempre restauran la política elegida (`try`/`finally`).
+- **Limitaciones agregadas al informe** a partir de la revisión: la carga de memoria tiene localidad diseñada; el escenario de memoria no tiene escrituras (el enunciado define `("MEM", dir)` sin ese dato); RD1 se cumple hasta unas 0,8 solicitudes por tick.
+- **Resultados finales:**
+  - RM1: 16,5 % de fallos con el kernel completo (Reloj); como máximo 20,3 % en las 5 semillas.
+  - RD1: 55–62 % menos desplazamiento que FCFS y espera máxima de 50–64 ticks en el escenario de disco; con carga creciente, C-LOOK se mantiene por debajo de 200 ticks hasta 0,8 solicitudes por tick.
+  - RM3: comprobado con procesos reales, también tras reiniciar el kernel.
+- **Pruebas del repositorio:**
+  - En `main`: pasan 189, se omite 1 (RM1 con el kernel, hasta que se fusione la rama del Integrante 1) y falla 1 ajena (`test_consola_comando_load`, por los espacios en la ruta).
+  - Con `feature/nucleo-prototipo2` + estos módulos: pasan las 210, incluida RM1 de punta a punta.
+  - Pruebas aleatorias: memoria 300 × 400 operaciones; disco 100 × 600 ticks con espera máxima de 75 ticks.
+- **Pendientes de otros integrantes detectados (sin modificar su código):**
+  - **Integrante 1:**
+    - Fusionar `feature/nucleo-prototipo2`.
+    - Llamar a `memoria.liberar_memoria` cuando un proceso termina solo. `memoria` ya lo cubre, pero conviene hacerlo explícito.
+    - Capturar el `ErrorSistema` de `disco.encolar_solicitud_disco` ante un bloque inválido en `("ES", bloque)`.
+    - Que `resumen_sistema()["bloques_libres"]` consulte `archivos.fs_estado_disco()`.
+    - Acordar en qué tick vuelve a LISTO un proceso tras un fallo de página (pendiente de la guía 3.3).
+  - **Integrante 3:** las funciones `fs_*` pendientes y la reserva y liberación de bloques (RF1).
+  - **Integrante 4:** los comandos `free`, `df` y los de archivos; `load` falla con rutas que contienen espacios (`test_consola_comando_load`).
