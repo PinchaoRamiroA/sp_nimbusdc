@@ -3,13 +3,15 @@
 Implementa un planificador de colas multinivel con retroalimentación (MLFQ)
 con 3 niveles de prioridad (0: alta, 1: media, 2: baja) y envejecimiento (aging)
 para evitar inanición y satisfacer RP1 y RP2.
+Soporta gestión y despacho de hilos simulados, instrucción MEM y fallos de página
+deterministas de 5 ticks, y manejo robusto de protección de memoria (RM3).
 Este módulo no debe importar a `kernel.py`.
 """
 from collections import deque
 import itertools
 
 from minidc import disco
-from minidc.errores import ErrorNoExiste, ErrorSistema
+from minidc.errores import ErrorMemoria, ErrorNoExiste, ErrorSistema
 
 # ---------------------------------------------------------------- estado interno
 _procesos = {}
@@ -76,7 +78,10 @@ def crear_proceso(
         "tiempo_espera": 0,
         "espera_consecutiva": 0,
         "tiempo_bloqueado": 0,
+        "espera_fallo_memoria": None,
         "hilos": [],
+        "siguiente_tid": 1,
+        "ultimo_tid_ejecutado": 0,
     }
     _procesos[pid] = proceso
     _colas[prio_norm].append(pid)
@@ -84,20 +89,25 @@ def crear_proceso(
 
 
 def crear_hilo(pid: int, programa: list) -> int:
-    """Crea un hilo asociado al proceso ``pid`` y devuelve su TID."""
+    """Crea un hilo asociado al proceso ``pid`` y devuelve su TID creciente único por proceso."""
     if pid not in _procesos:
         raise ErrorNoExiste(f"Proceso con PID {pid} no existe")
     p = _procesos[pid]
     prog_tuplas = [tuple(inst) if isinstance(inst, (list, tuple)) else inst for inst in programa]
-    tid = len(p["hilos"]) + 1
+    tid = p.get("siguiente_tid", len(p.get("hilos", [])) + 1)
+    p["siguiente_tid"] = tid + 1
     hilo = {
         "tid": tid,
         "pid": pid,
         "programa": prog_tuplas,
         "pc": 0,
         "estado": "LISTO",
+        "restante_instruccion": None,
+        "cpu_usada": 0,
+        "tiempo_bloqueado": 0,
+        "espera_fallo_memoria": None,
     }
-    p["hilos"].append(hilo)
+    p.setdefault("hilos", []).append(hilo)
     return tid
 
 
@@ -109,6 +119,10 @@ def terminar_proceso(pid: int) -> None:
     p["estado"] = "TERMINADO"
     if p["tick_fin"] is None:
         p["tick_fin"] = _reloj_actual
+
+    # Terminar todos los hilos del proceso
+    for h in p.get("hilos", []):
+        h["estado"] = "TERMINADO"
 
     # Remover de colas de listos
     for cola in _colas.values():
@@ -154,6 +168,7 @@ def listar_procesos() -> list:
             "primer_inicio": p["primer_inicio"],
             "tick_llegada": p["tick_llegada"],
             "tick_fin": p["tick_fin"],
+            "hilos": [dict(h) for h in p.get("hilos", [])],
         }
         for p in _procesos.values()
     ]
@@ -174,14 +189,77 @@ def despertar_proceso(pid: int) -> None:
     if pid not in _procesos:
         return
     p = _procesos[pid]
-    if p["estado"] == "BLOQUEADO":
-        if p["pc"] >= len(p["programa"]):
-            p["estado"] = "TERMINADO"
-            p["tick_fin"] = _reloj_actual
-        else:
+    if p.get("hilos"):
+        desperto_alguno = False
+        for h in p["hilos"]:
+            if h["estado"] == "BLOQUEADO" and h.get("espera_fallo_memoria") is None:
+                if h["pc"] >= len(h["programa"]):
+                    h["estado"] = "TERMINADO"
+                else:
+                    h["estado"] = "LISTO"
+                    desperto_alguno = True
+        if p["estado"] == "BLOQUEADO" and desperto_alguno:
             p["estado"] = "LISTO"
             p["espera_consecutiva"] = 0
-            _colas[p["prioridad"]].append(pid)
+            if pid not in _colas[p["prioridad"]]:
+                _colas[p["prioridad"]].append(pid)
+    else:
+        if p["estado"] == "BLOQUEADO" and p.get("espera_fallo_memoria") is None:
+            if p["pc"] >= len(p["programa"]):
+                p["estado"] = "TERMINADO"
+                p["tick_fin"] = _reloj_actual
+            else:
+                p["estado"] = "LISTO"
+                p["espera_consecutiva"] = 0
+                if pid not in _colas[p["prioridad"]]:
+                    _colas[p["prioridad"]].append(pid)
+
+
+def avanzar_esperas_memoria() -> None:
+    """Avanza los contadores de espera por fallo de página de procesos e hilos bloqueados."""
+    for pid, p in list(_procesos.items()):
+        if p["estado"] == "TERMINADO":
+            continue
+
+        # 1. Proceso con hilos
+        if p.get("hilos"):
+            desperto_hilo = False
+            for h in p["hilos"]:
+                if h["estado"] == "BLOQUEADO" and h.get("espera_fallo_memoria") is not None:
+                    h["espera_fallo_memoria"] -= 1
+                    if h["espera_fallo_memoria"] <= 0:
+                        h["espera_fallo_memoria"] = None
+                        if h["pc"] >= len(h["programa"]):
+                            h["estado"] = "TERMINADO"
+                        else:
+                            h["estado"] = "LISTO"
+                            desperto_hilo = True
+
+            # Si el proceso estaba bloqueado y ahora tiene al menos un hilo listo
+            if p["estado"] == "BLOQUEADO" and desperto_hilo:
+                p["estado"] = "LISTO"
+                p["espera_consecutiva"] = 0
+                if p["prioridad"] < p["prioridad_original"]:
+                    p["prioridad"] = p["prioridad_original"]
+                if pid not in _colas[p["prioridad"]]:
+                    _colas[p["prioridad"]].append(pid)
+
+        # 2. Proceso sin hilos
+        else:
+            if p["estado"] == "BLOQUEADO" and p.get("espera_fallo_memoria") is not None:
+                p["espera_fallo_memoria"] -= 1
+                if p["espera_fallo_memoria"] <= 0:
+                    p["espera_fallo_memoria"] = None
+                    if p["pc"] >= len(p["programa"]):
+                        p["estado"] = "TERMINADO"
+                        p["tick_fin"] = _reloj_actual
+                    else:
+                        p["estado"] = "LISTO"
+                        p["espera_consecutiva"] = 0
+                        if p["prioridad"] < p["prioridad_original"]:
+                            p["prioridad"] = p["prioridad_original"]
+                        if pid not in _colas[p["prioridad"]]:
+                            _colas[p["prioridad"]].append(pid)
 
 
 def planificar_y_ejecutar_cpu(reloj: int) -> None:
@@ -223,55 +301,281 @@ def planificar_y_ejecutar_cpu(reloj: int) -> None:
         p = _procesos[pid_actual]
         _pids_ejecutados_tick.add(pid_actual)
 
-        if p["pc"] >= len(p["programa"]):
-            p["estado"] = "TERMINADO"
-            p["tick_fin"] = reloj
-            _en_ejecucion[cpu] = None
-            continue
+        # ---------------------------------------------------- Caso A: Proceso con hilos
+        hilos = p.get("hilos", [])
+        hilos_activos = [h for h in hilos if h["estado"] != "TERMINADO"]
+        if hilos_activos:
+            hilos_listos = [h for h in hilos_activos if h["estado"] in ("LISTO", "EJECUTANDO")]
+            if not hilos_listos:
+                # Todos los hilos están bloqueados
+                p["estado"] = "BLOQUEADO"
+                _en_ejecucion[cpu] = None
+                continue
 
-        inst = p["programa"][p["pc"]]
-        tipo = inst[0]
-        valor = inst[1]
+            # Despacho Round-Robin entre los hilos listos
+            ultimo_tid = p.get("ultimo_tid_ejecutado", 0)
+            candidatos = [h for h in hilos_listos if h["tid"] > ultimo_tid]
+            if not candidatos:
+                candidatos = hilos_listos
+            hilo = candidatos[0]
+            p["ultimo_tid_ejecutado"] = hilo["tid"]
+            hilo["estado"] = "EJECUTANDO"
 
-        if tipo == "CPU":
-            if p["restante_instruccion"] is None:
-                p["restante_instruccion"] = int(valor)
+            if hilo["pc"] >= len(hilo["programa"]):
+                hilo["estado"] = "TERMINADO"
+                if all(th["estado"] == "TERMINADO" for th in p["hilos"]):
+                    p["estado"] = "TERMINADO"
+                    p["tick_fin"] = reloj
+                    _en_ejecucion[cpu] = None
+                elif not any(th["estado"] == "LISTO" for th in p["hilos"]):
+                    p["estado"] = "BLOQUEADO"
+                    if p["prioridad"] < p["prioridad_original"]:
+                        p["prioridad"] = p["prioridad_original"]
+                    _en_ejecucion[cpu] = None
+                else:
+                    p["estado"] = "LISTO"
+                    _colas[p["prioridad"]].append(pid_actual)
+                    _en_ejecucion[cpu] = None
+                continue
 
-            p["restante_instruccion"] -= 1
-            p["cpu_usada"] += 1
+            inst = hilo["programa"][hilo["pc"]]
+            tipo = inst[0]
+            valor = inst[1]
 
-            if p["restante_instruccion"] == 0:
-                p["restante_instruccion"] = None
+            if tipo == "CPU":
+                if hilo["restante_instruccion"] is None:
+                    hilo["restante_instruccion"] = int(valor)
+
+                hilo["restante_instruccion"] -= 1
+                hilo["cpu_usada"] = hilo.get("cpu_usada", 0) + 1
+                p["cpu_usada"] += 1
+
+                if hilo["restante_instruccion"] == 0:
+                    hilo["restante_instruccion"] = None
+                    hilo["pc"] += 1
+                    if hilo["pc"] >= len(hilo["programa"]):
+                        hilo["estado"] = "TERMINADO"
+                        if all(th["estado"] == "TERMINADO" for th in p["hilos"]):
+                            p["estado"] = "TERMINADO"
+                            p["tick_fin"] = reloj
+                            _en_ejecucion[cpu] = None
+                        elif not any(th["estado"] == "LISTO" for th in p["hilos"]):
+                            p["estado"] = "BLOQUEADO"
+                            if p["prioridad"] < p["prioridad_original"]:
+                                p["prioridad"] = p["prioridad_original"]
+                            _en_ejecucion[cpu] = None
+                        else:
+                            p["estado"] = "LISTO"
+                            p["espera_consecutiva"] = 0
+                            if p["prioridad"] < p["prioridad_original"]:
+                                p["prioridad"] = p["prioridad_original"]
+                            _colas[p["prioridad"]].append(pid_actual)
+                            _en_ejecucion[cpu] = None
+                    else:
+                        hilo["estado"] = "LISTO"
+                        p["estado"] = "LISTO"
+                        p["espera_consecutiva"] = 0
+                        if p["prioridad"] < p["prioridad_original"]:
+                            p["prioridad"] = p["prioridad_original"]
+                        _colas[p["prioridad"]].append(pid_actual)
+                        _en_ejecucion[cpu] = None
+                else:
+                    # La instrucción aún tiene ráfaga pendiente: permanece ejecutando en la CPU
+                    hilo["estado"] = "LISTO"
+                    p["estado"] = "EJECUTANDO"
+
+            elif tipo == "MEM":
+                direccion = int(valor)
+                escritura = bool(inst[2]) if len(inst) > 2 else False
+
+                try:
+                    from minidc import memoria
+                    res = memoria.acceder_memoria(pid_actual, direccion, escritura)
+                except NotImplementedError:
+                    if direccion < 0 or direccion >= p["memoria_bytes"]:
+                        terminar_proceso(pid_actual)
+                        _en_ejecucion[cpu] = None
+                        continue
+                    res = {"marco": 0, "fallo_pagina": False, "pagina_reemplazada": None}
+                except ErrorMemoria:
+                    # RM3: Acceso inválido termina cleanly al proceso infractor
+                    terminar_proceso(pid_actual)
+                    _en_ejecucion[cpu] = None
+                    continue
+
+                hilo["cpu_usada"] = hilo.get("cpu_usada", 0) + 1
+                p["cpu_usada"] += 1
+                hilo["pc"] += 1
+
+                if res.get("fallo_pagina", False):
+                    hilo["estado"] = "BLOQUEADO"
+                    hilo["espera_fallo_memoria"] = 5
+                    if not any(th["estado"] == "LISTO" for th in p["hilos"]):
+                        p["estado"] = "BLOQUEADO"
+                        if p["prioridad"] < p["prioridad_original"]:
+                            p["prioridad"] = p["prioridad_original"]
+                        _en_ejecucion[cpu] = None
+                    else:
+                        p["estado"] = "LISTO"
+                        if p["prioridad"] < p["prioridad_original"]:
+                            p["prioridad"] = p["prioridad_original"]
+                        _colas[p["prioridad"]].append(pid_actual)
+                        _en_ejecucion[cpu] = None
+                else:
+                    if hilo["pc"] >= len(hilo["programa"]):
+                        hilo["estado"] = "TERMINADO"
+                        if all(th["estado"] == "TERMINADO" for th in p["hilos"]):
+                            p["estado"] = "TERMINADO"
+                            p["tick_fin"] = reloj
+                            _en_ejecucion[cpu] = None
+                        elif not any(th["estado"] == "LISTO" for th in p["hilos"]):
+                            p["estado"] = "BLOQUEADO"
+                            if p["prioridad"] < p["prioridad_original"]:
+                                p["prioridad"] = p["prioridad_original"]
+                            _en_ejecucion[cpu] = None
+                        else:
+                            p["estado"] = "LISTO"
+                            _colas[p["prioridad"]].append(pid_actual)
+                            _en_ejecucion[cpu] = None
+                    else:
+                        hilo["estado"] = "LISTO"
+                        p["estado"] = "LISTO"
+                        _colas[p["prioridad"]].append(pid_actual)
+                        _en_ejecucion[cpu] = None
+
+            elif tipo == "ES":
+                bloque = int(valor)
+                operacion = str(inst[2]) if len(inst) > 2 else "L"
+                disco.encolar_solicitud_disco(pid_actual, bloque, operacion)
+                hilo["pc"] += 1
+                hilo["estado"] = "BLOQUEADO"
+                if not any(th["estado"] == "LISTO" for th in p["hilos"]):
+                    p["estado"] = "BLOQUEADO"
+                    if p["prioridad"] < p["prioridad_original"]:
+                        p["prioridad"] = p["prioridad_original"]
+                    _en_ejecucion[cpu] = None
+                else:
+                    p["estado"] = "LISTO"
+                    if p["prioridad"] < p["prioridad_original"]:
+                        p["prioridad"] = p["prioridad_original"]
+                    _colas[p["prioridad"]].append(pid_actual)
+                    _en_ejecucion[cpu] = None
+
+            else:
+                hilo["pc"] += 1
+                if hilo["pc"] >= len(hilo["programa"]):
+                    hilo["estado"] = "TERMINADO"
+                    if all(th["estado"] == "TERMINADO" for th in p["hilos"]):
+                        p["estado"] = "TERMINADO"
+                        p["tick_fin"] = reloj
+                        _en_ejecucion[cpu] = None
+                    elif not any(th["estado"] == "LISTO" for th in p["hilos"]):
+                        p["estado"] = "BLOQUEADO"
+                        if p["prioridad"] < p["prioridad_original"]:
+                            p["prioridad"] = p["prioridad_original"]
+                        _en_ejecucion[cpu] = None
+                    else:
+                        p["estado"] = "LISTO"
+                        _colas[p["prioridad"]].append(pid_actual)
+                        _en_ejecucion[cpu] = None
+                else:
+                    hilo["estado"] = "LISTO"
+                    p["estado"] = "LISTO"
+                    _colas[p["prioridad"]].append(pid_actual)
+                    _en_ejecucion[cpu] = None
+
+        # ---------------------------------------------------- Caso B: Proceso secuencial (sin hilos)
+        else:
+            if p["pc"] >= len(p["programa"]):
+                p["estado"] = "TERMINADO"
+                p["tick_fin"] = reloj
+                _en_ejecucion[cpu] = None
+                continue
+
+            inst = p["programa"][p["pc"]]
+            tipo = inst[0]
+            valor = inst[1]
+
+            if tipo == "CPU":
+                if p["restante_instruccion"] is None:
+                    p["restante_instruccion"] = int(valor)
+
+                p["restante_instruccion"] -= 1
+                p["cpu_usada"] += 1
+
+                if p["restante_instruccion"] == 0:
+                    p["restante_instruccion"] = None
+                    p["pc"] += 1
+                    if p["pc"] >= len(p["programa"]):
+                        p["estado"] = "TERMINADO"
+                        p["tick_fin"] = reloj
+                        _en_ejecucion[cpu] = None
+                    else:
+                        # Ráfaga completada: cede CPU y rota al final de su cola
+                        if p["prioridad"] < p["prioridad_original"]:
+                            p["prioridad"] = p["prioridad_original"]
+                        p["estado"] = "LISTO"
+                        p["espera_consecutiva"] = 0
+                        _colas[p["prioridad"]].append(pid_actual)
+                        _en_ejecucion[cpu] = None
+
+            elif tipo == "MEM":
+                direccion = int(valor)
+                escritura = bool(inst[2]) if len(inst) > 2 else False
+
+                try:
+                    from minidc import memoria
+                    res = memoria.acceder_memoria(pid_actual, direccion, escritura)
+                except NotImplementedError:
+                    if direccion < 0 or direccion >= p["memoria_bytes"]:
+                        terminar_proceso(pid_actual)
+                        _en_ejecucion[cpu] = None
+                        continue
+                    res = {"marco": 0, "fallo_pagina": False, "pagina_reemplazada": None}
+                except ErrorMemoria:
+                    # RM3: Acceso inválido termina cleanly al proceso infractor
+                    terminar_proceso(pid_actual)
+                    _en_ejecucion[cpu] = None
+                    continue
+
+                p["cpu_usada"] += 1
+                p["pc"] += 1
+
+                if res.get("fallo_pagina", False):
+                    p["estado"] = "BLOQUEADO"
+                    p["espera_fallo_memoria"] = 5
+                    if p["prioridad"] < p["prioridad_original"]:
+                        p["prioridad"] = p["prioridad_original"]
+                    _en_ejecucion[cpu] = None
+                else:
+                    if p["pc"] >= len(p["programa"]):
+                        p["estado"] = "TERMINADO"
+                        p["tick_fin"] = reloj
+                        _en_ejecucion[cpu] = None
+                    else:
+                        if p["prioridad"] < p["prioridad_original"]:
+                            p["prioridad"] = p["prioridad_original"]
+                        p["estado"] = "LISTO"
+                        p["espera_consecutiva"] = 0
+                        _colas[p["prioridad"]].append(pid_actual)
+                        _en_ejecucion[cpu] = None
+
+            elif tipo == "ES":
+                bloque = int(valor)
+                operacion = str(inst[2]) if len(inst) > 2 else "L"
+                disco.encolar_solicitud_disco(pid_actual, bloque, operacion)
+                p["estado"] = "BLOQUEADO"
+                p["pc"] += 1
+                if p["prioridad"] < p["prioridad_original"]:
+                    p["prioridad"] = p["prioridad_original"]
+                _en_ejecucion[cpu] = None
+
+            else:
                 p["pc"] += 1
                 if p["pc"] >= len(p["programa"]):
                     p["estado"] = "TERMINADO"
                     p["tick_fin"] = reloj
                     _en_ejecucion[cpu] = None
-                else:
-                    # Ráfaga completada: cede CPU y rota al final de su cola
-                    if p["prioridad"] < p["prioridad_original"]:
-                        p["prioridad"] = p["prioridad_original"]
-                    p["estado"] = "LISTO"
-                    p["espera_consecutiva"] = 0
-                    _colas[p["prioridad"]].append(pid_actual)
-                    _en_ejecucion[cpu] = None
-
-        elif tipo == "ES":
-            bloque = int(valor)
-            operacion = str(inst[2]) if len(inst) > 2 else "L"
-            disco.encolar_solicitud_disco(pid_actual, bloque, operacion)
-            p["estado"] = "BLOQUEADO"
-            p["pc"] += 1
-            if p["prioridad"] < p["prioridad_original"]:
-                p["prioridad"] = p["prioridad_original"]
-            _en_ejecucion[cpu] = None
-
-        else:
-            p["pc"] += 1
-            if p["pc"] >= len(p["programa"]):
-                p["estado"] = "TERMINADO"
-                p["tick_fin"] = reloj
-                _en_ejecucion[cpu] = None
 
 
 def actualizar_metricas_espera() -> None:
@@ -296,6 +600,9 @@ def actualizar_metricas_espera() -> None:
                 p["espera_consecutiva"] = 0
         elif p["estado"] == "BLOQUEADO":
             p["tiempo_bloqueado"] += 1
+            for h in p.get("hilos", []):
+                if h["estado"] == "BLOQUEADO":
+                    h["tiempo_bloqueado"] = h.get("tiempo_bloqueado", 0) + 1
         elif p["estado"] == "EJECUTANDO":
             p["espera_consecutiva"] = 0
 

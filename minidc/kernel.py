@@ -27,6 +27,12 @@ def iniciar_sistema(config: dict) -> None:
     disco.reiniciar(_config)
     procesos.reiniciar(_config)
     try:
+        from minidc import memoria
+        if hasattr(memoria, "reiniciar"):
+            memoria.reiniciar(_config)
+    except Exception:
+        pass
+    try:
         from minidc import archivos
         archivos.reiniciar(_config)
     except Exception:
@@ -77,10 +83,12 @@ def tick() -> None:
             restantes.append(llegada)
     _llegadas_pendientes = restantes
 
-    # 2. Atención de la E/S terminada (interrupción)
+    # 2. Atención de la E/S terminada (interrupción) y fallos de memoria
     pids_es = disco.avanzar_tick()
     for pid in pids_es:
         procesos.despertar_proceso(pid)
+
+    procesos.avanzar_esperas_memoria()
 
     # 3. Ejecución de 1 tick por cada CPU
     procesos.planificar_y_ejecutar_cpu(_reloj)
@@ -211,10 +219,19 @@ def obtener_catalogo() -> dict:
 def resumen_sistema() -> dict:
     """Devuelve resumen con claves: ``reloj``, ``procesos_activos``, ``marcos_libres``, ``bloques_libres``."""
     activos = len([p for p in procesos.listar_procesos() if p["estado"] != "TERMINADO"])
+    marcos_libres = _config.get("marcos_fisicos", 64)
+    try:
+        from minidc import memoria
+        est_mem = memoria.estado_memoria()
+        if isinstance(est_mem, dict) and "marcos_libres" in est_mem:
+            marcos_libres = est_mem["marcos_libres"]
+    except (ErrorSistema, NotImplementedError, AttributeError):
+        pass
+
     return {
         "reloj": _reloj,
         "procesos_activos": activos,
-        "marcos_libres": _config.get("marcos_fisicos", 64),
+        "marcos_libres": marcos_libres,
         "bloques_libres": _config.get("bloques_disco", 200),
     }
 
