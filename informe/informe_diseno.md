@@ -187,7 +187,7 @@
 - `tests/test_escenarios.py` (24 pruebas): valida el formato de los escenarios y mide RP1, RP2 y RP3 sobre ellos usando solo funciones del enunciado. Todas pasando tras la integración del catálogo y usuarios en `kernel.cargar_escenario`.
 - `tests/test_prototipo1.py` (17 pruebas): pruebas unitarias y de integración para `kernel.py` y `procesos.py`, verificando el ciclo de 4 pasos, el planificador MLFQ con aging, preempción y el cumplimiento formal de RP1, RP2 y RP3.
 - `tests/test_prototipo2.py` (19 pruebas): pruebas unitarias y de integración para `kernel.py` y `procesos.py` en el Prototipo 2. Valida la asignación incremental de TIDs independientes por proceso, despacho concurrente desacoplado de hilos, el bloqueo exacto y determinista de 5 ticks ante fallo de página en la instrucción `("MEM", dir)`, el cumplimiento del requisito RM3 (proceso infractor termina limpiamente ante `ErrorMemoria` sin afectar a procesos concurrentes) e integración multiprocesador (`num_cpus=2`).
-- `tests/test_consola.py` (21 pruebas): pruebas para `consola.py`, verificando comandos `ps`, `kill`, `run` (usando el catálogo del escenario), `tick`, `top`, `whoami`, `pwd`, `cd`, el aislamiento de `historial` y `directorio_actual` por usuario, las variantes de Windows (`tasklist`, `taskkill`) y el formato obligatorio de errores (`Error:...`).
+- `tests/test_consola.py` (35 pruebas): pruebas para `consola.py`, verificando comandos de procesos (`ps`, `kill`, `run` con catálogo del escenario, `tick`, `top`), comandos de archivos (`pwd`, `cd`, `ls` con `-l`, `mkdir`, `touch`, `cat`, `echo` con `>` y `>>`, `rm` con `-r`, `chmod`, `ln -s`, `tree`), comandos de recursos (`free` y `df`), el aislamiento de `historial` y `directorio_actual` por usuario, las variantes de Windows (`tasklist`, `taskkill`, `dir`, `md`, `type`, `del`, `mklink`), el formato obligatorio de errores (`Error:...`), control de permisos entre usuarios sobre el sistema de archivos y soporte de rutas con espacios en `load`.
 - `tests/test_estructura.py` (9 pruebas): verificación de importaciones públicas, jerarquía de excepciones en `errores.py` y coincidencia exacta de firmas obligatorias.
 - Escenarios en `tests/escenarios/` (formato del enunciado): `ejemplo_enunciado.json` (el ejemplo del enunciado), `base.json` (mezcla de web, respaldo y analítica; RP1), `inanicion.json` (un servicio web cada 4 ticks frente a una analítica de baja prioridad; RP2) y `carga_cpu.json` (tres analíticas y cinco web; RP3). En los escenarios propios la prioridad 0 es la más alta, como en el planificador del equipo. Prototipo 2: `memoria.json` (analítica, dos web y respaldo con accesos `("MEM", dir)` con localidad; Σcuotas = 15 ≤ 16 marcos; RM1) y `disco.json` (10 procesos de respaldo con 8 E/S a bloques al azar; RD1). Ambos se regeneran con `--guardar` desde los scripts de `informe/experimentos/`.
 
@@ -198,7 +198,7 @@
 - **Integrante 1:** `procesos.py`, `kernel.py` y las suites de pruebas `test_prototipo1.py` y `test_prototipo2.py` se desarrollaron con asistencia de modelos de lenguaje (Gemini). El integrante las revisó, ejecutó y adaptó, y puede explicar cada línea.
 - **Integrante 2:** `disco.py`, `memoria.py`, sus pruebas, los escenarios `memoria.json` y `disco.json` y los scripts de `informe/experimentos/` se desarrollaron con asistencia de Claude (Anthropic). El integrante los revisó, ejecutó y adaptó, y puede explicar cada línea.
 - **Integrante 3:** `archivos.py`, los escenarios JSON, el experimento de asignación y sus pruebas se desarrollaron con asistencia de Claude (Anthropic). El integrante los revisó y ejecutó, y puede explicar cada línea.
-- **Integrante 4:** `consola.py`, infraestructura de pruebas y validación del Prototipo 1 se desarrollaron con asistencia de herramientas de IA. El integrante las revisó, ejecutó y adaptó, y puede explicar cada línea.
+- **Integrante 4:** `consola.py`, comandos de archivos y recursos, infraestructura de pruebas y validación de los Prototipos 1 y 2 se desarrollaron con asistencia de herramientas de IA. El integrante las revisó, ejecutó y adaptó, y puede explicar cada línea.
 
 ---
 
@@ -283,4 +283,25 @@
 - **Experimento:** `informe/experimentos/experimento_asignacion.py` compara contigua, enlazada e indexada (sección 2.4). La contigua falla 17.6 veces habiendo espacio libre y mueve 410 bloques; la enlazada necesita 4.8 accesos para llegar a un bloque; la indexada, 1.
 - **Pruebas:** `tests/test_archivos.py` pasa de 23 a 83 pruebas, incluida RF1: 12 operaciones sin permiso y 300 operaciones al azar en un disco que se llena.
 - **Integración:** `kernel.resumen_sistema()["bloques_libres"]` ahora consulta `archivos.fs_estado_disco()`, el pendiente que había anotado el Integrante 2. Se hizo después de fusionar la rama del Integrante 1, que tocaba esa misma función. Con `main` actualizado pasan las 270 pruebas.
-- **Pendiente para el Integrante 4:** los comandos de archivos y `df` en la consola; se le pasó qué función de `archivos` usar en cada uno.
+
+#### 22 de noviembre (5) — Integrante 4: comandos de archivos, recursos y pruebas de consola (rama `feature/consola-prototipo2`)
+- **Implementación de comandos de archivos:**
+  - `mkdir` y `md`: creación de directorios en el sistema de archivos virtual.
+  - `touch`: creación de archivos vacíos o actualización sin alterar contenido existente.
+  - `cat` y `type`: lectura e impresión del contenido de archivos de texto.
+  - `echo` con redirección: soporte para `echo "texto" > archivo` (sobrescritura) y `echo "texto" >> archivo` (anexar), así como sintaxis con operadores contiguos (`>archivo` / `>>archivo`).
+  - `ls` y `dir`: listado de entradas; soporte para `-l` mostrando modo octal, propietario, grupo, tamaño en bytes y nombre.
+  - `rm` y `del`: borrado de archivos y enlaces; soporte de `-r` / `-R` para borrado recursivo de árboles de directorios.
+  - `chmod`: modificación de permisos octales sobre archivos y directorios.
+  - `ln -s` y `mklink`: creación de enlaces simbólicos resolviendo rutas de destino y enlace.
+  - `tree`: visualización recursiva del árbol de directorios con conectores estándar (`├──`, `└──`, `│   `).
+- **Implementación de comandos de recursos:**
+  - `free`: consulta `memoria.estado_memoria()` y `memoria.metricas_memoria()` para presentar marcos totales, usados, libres, fragmentación interna, accesos, fallos de página (con porcentaje), reemplazos y escrituras a swap.
+  - `df`: consulta `archivos.fs_estado_disco()` para reportar bloques totales, usados, libres, porcentaje de ocupación, grupos de huecos libres y política de asignación (`indexada`).
+- **Resolución canónica de rutas (`_resolver_ruta`):**
+  - Permite que todos los comandos de consola operen con rutas relativas, absolutas o con segmentos `.` y `..`, traduciéndolas a rutas canónicas absolutas que el módulo `archivos` exige.
+  - `cd` valida existencia y permisos antes de cambiar el directorio de trabajo del usuario.
+- **Robustez y pruebas:**
+  - `load`: soporta rutas con espacios y comillas (solución al pendiente de la bitácora).
+  - La suite `tests/test_consola.py` se amplía de 21 a 35 pruebas exhaustivas.
+  - Con esta entrega, el total de pruebas del repositorio pasa a **282 pruebas automáticas**, todas pasando exitosamente.

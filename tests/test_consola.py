@@ -199,6 +199,189 @@ def test_consola_historial():
     assert hist_cliente == ["whoami"]
 
 
+# ---------------------------------------------------------------- archivos y recursos (Prototipo 2)
+def test_consola_mkdir_y_md():
+    salida1 = consola.ejecutar_comando("mkdir /datos")
+    assert salida1 == ""
+
+    salida2 = consola.ejecutar_comando("md /datos/sub")
+    assert salida2 == ""
+
+    salida_dup = consola.ejecutar_comando("mkdir /datos")
+    assert salida_dup.startswith("Error:")
+
+    salida_vacia = consola.ejecutar_comando("mkdir")
+    assert salida_vacia.startswith("Error:")
+
+
+def test_consola_touch_y_cat_type():
+    consola.ejecutar_comando("mkdir /archivos")
+    salida_touch = consola.ejecutar_comando("touch /archivos/vacio.txt")
+    assert salida_touch == ""
+
+    salida_cat = consola.ejecutar_comando("cat /archivos/vacio.txt")
+    assert salida_cat == ""
+
+    salida_type = consola.ejecutar_comando("type /archivos/vacio.txt")
+    assert salida_type == ""
+
+    salida_error = consola.ejecutar_comando("cat /archivos/no_existe.txt")
+    assert salida_error.startswith("Error:")
+
+
+def test_consola_echo_redirecciones():
+    salida1 = consola.ejecutar_comando('echo "primer linea" > /mensaje.txt')
+    assert salida1 == ""
+    assert consola.ejecutar_comando("cat /mensaje.txt") == "primer linea"
+
+    salida2 = consola.ejecutar_comando('echo " segunda linea" >> /mensaje.txt')
+    assert salida2 == ""
+    assert consola.ejecutar_comando("cat /mensaje.txt") == "primer linea segunda linea"
+
+    # Redirección con operador pegado
+    salida3 = consola.ejecutar_comando('echo "pegado">/pegado.txt')
+    assert salida3 == ""
+    assert consola.ejecutar_comando("cat /pegado.txt") == "pegado"
+
+    # Echo sin redirección
+    salida_echo = consola.ejecutar_comando('echo hola mundo')
+    assert salida_echo == "hola mundo"
+
+    # Error si falta destino
+    salida_err = consola.ejecutar_comando('echo texto >')
+    assert salida_err.startswith("Error:")
+
+
+def test_consola_ls_y_dir():
+    consola.ejecutar_comando("mkdir /carpeta")
+    consola.ejecutar_comando('echo "contenido" > /carpeta/archivo.txt')
+    consola.ejecutar_comando("mkdir /carpeta/sub")
+
+    salida_ls = consola.ejecutar_comando("ls /carpeta")
+    assert "archivo.txt" in salida_ls
+    assert "sub" in salida_ls
+
+    salida_lsl = consola.ejecutar_comando("ls -l /carpeta")
+    assert "-644 admin usuarios" in salida_lsl or "archivo.txt" in salida_lsl
+    assert "d755 admin usuarios" in salida_lsl or "sub" in salida_lsl
+
+    salida_dir = consola.ejecutar_comando("dir /carpeta")
+    assert salida_dir == salida_lsl
+
+
+def test_consola_rm_y_del():
+    consola.ejecutar_comando('echo "a borrar" > /borrar.txt')
+    salida_rm = consola.ejecutar_comando("rm /borrar.txt")
+    assert salida_rm == ""
+    assert consola.ejecutar_comando("cat /borrar.txt").startswith("Error:")
+
+    consola.ejecutar_comando('echo "con del" > /borrar2.txt')
+    salida_del = consola.ejecutar_comando("del /borrar2.txt")
+    assert salida_del == ""
+    assert consola.ejecutar_comando("cat /borrar2.txt").startswith("Error:")
+
+    # Directorio no vacío sin -r falla
+    consola.ejecutar_comando("mkdir /arbol")
+    consola.ejecutar_comando('echo "x" > /arbol/hijo.txt')
+    salida_rm_dir = consola.ejecutar_comando("rm /arbol")
+    assert salida_rm_dir.startswith("Error:")
+
+    # Con -r tiene éxito
+    salida_rm_r = consola.ejecutar_comando("rm -r /arbol")
+    assert salida_rm_r == ""
+    assert consola.ejecutar_comando("ls /arbol").startswith("Error:")
+
+
+def test_consola_chmod():
+    consola.ejecutar_comando('echo "privado" > /privado.txt')
+    salida_chmod = consola.ejecutar_comando("chmod 600 /privado.txt")
+    assert salida_chmod == ""
+
+    info = consola.ejecutar_comando("ls -l /privado.txt")
+    assert "600" in info
+
+    salida_invalido = consola.ejecutar_comando("chmod 999 /privado.txt")
+    assert salida_invalido.startswith("Error:")
+
+
+def test_consola_enlaces_simbolicos():
+    consola.ejecutar_comando('echo "destino real" > /real.txt')
+    salida_ln = consola.ejecutar_comando("ln -s /real.txt /acceso.txt")
+    assert salida_ln == ""
+    assert consola.ejecutar_comando("cat /acceso.txt") == "destino real"
+
+    salida_mklink = consola.ejecutar_comando("mklink /acceso2.txt /real.txt")
+    assert salida_mklink == ""
+    assert consola.ejecutar_comando("cat /acceso2.txt") == "destino real"
+
+
+def test_consola_tree():
+    consola.ejecutar_comando("mkdir /sistema")
+    consola.ejecutar_comando("mkdir /sistema/sub")
+    consola.ejecutar_comando('echo "1" > /sistema/sub/doc.txt')
+
+    salida = consola.ejecutar_comando("tree /sistema")
+    assert not salida.startswith("Error:")
+    assert "/sistema" in salida
+    assert "sub" in salida
+    assert "doc.txt" in salida
+
+
+def test_consola_free():
+    salida = consola.ejecutar_comando("free")
+    assert not salida.startswith("Error:")
+    assert "Memoria física" in salida
+    assert "marcos" in salida
+    assert "Fallos de página" in salida
+
+
+def test_consola_df():
+    salida = consola.ejecutar_comando("df")
+    assert not salida.startswith("Error:")
+    assert "SistemaArchivos" in salida
+    assert "/dev/disco0" in salida
+    assert "Bloques" in salida
+    assert "Libres" in salida
+
+
+def test_consola_permisos_archivos_cliente():
+    from minidc import archivos
+    archivos.crear_usuario("cliente_a", "usuarios")
+    archivos.crear_usuario("cliente_b", "usuarios")
+
+    consola.ejecutar_comando("mkdir /privado_b", usuario="cliente_b")
+    consola.ejecutar_comando("chmod 700 /privado_b", usuario="cliente_b")
+    consola.ejecutar_comando('echo "secreto" > /privado_b/clave.txt', usuario="cliente_b")
+
+    # cliente_a no puede leer ni entrar
+    salida_denegada = consola.ejecutar_comando("cat /privado_b/clave.txt", usuario="cliente_a")
+    assert salida_denegada.startswith("Error:")
+
+    # admin sí puede ignorando permisos
+    salida_admin = consola.ejecutar_comando("cat /privado_b/clave.txt", usuario="admin")
+    assert salida_admin == "secreto"
+
+
+def test_consola_load_con_espacios_en_ruta():
+    with tempfile.TemporaryDirectory() as tempdir:
+        dir_con_espacios = os.path.join(tempdir, "carpeta con espacios")
+        os.makedirs(dir_con_espacios, exist_ok=True)
+        ruta_json = os.path.join(dir_con_espacios, "escenario prueba.json")
+
+        datos = {
+            "config": {"num_cpus": 1, "bloques_disco": 100},
+            "catalogo": {},
+            "llegadas": [],
+        }
+        with open(ruta_json, "w", encoding="utf-8") as f:
+            json.dump(datos, f)
+
+        # Cargar con ruta sin comillas
+        salida = consola.ejecutar_comando(f"load {ruta_json}")
+        assert not salida.startswith("Error:")
+        assert "Escenario cargado exitosamente" in salida
+
+
 # ---------------------------------------------------------------- errores y casos borde
 def test_consola_comando_help():
     salida = consola.ejecutar_comando("help")
