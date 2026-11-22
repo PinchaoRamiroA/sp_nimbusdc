@@ -2,7 +2,7 @@
 import json
 import os
 
-from minidc import disco, procesos
+from minidc import archivos, disco, procesos
 from minidc.errores import ErrorNoExiste, ErrorSistema
 
 # ---------------------------------------------------------------- estado interno
@@ -232,7 +232,7 @@ def resumen_sistema() -> dict:
         "reloj": _reloj,
         "procesos_activos": activos,
         "marcos_libres": marcos_libres,
-        "bloques_libres": _config.get("bloques_disco", 200),
+        "bloques_libres": archivos.fs_estado_disco()["bloques_libres"],
     }
 
 

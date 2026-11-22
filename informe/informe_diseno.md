@@ -134,15 +134,37 @@
   - El tiempo de servicio no distingue lectura de escritura.
 
 ### 2.4 Asignación de bloques de archivos (`archivos.py`)
-> Estado: Prototipo 1 (avance). Se completa en el Prototipo 2.
-- **Algoritmo elegido:** asignación indexada (prevista). En el Prototipo 1 todavía no se reservan bloques: eso llega con `fs_escribir` en el Prototipo 2.
-- **Decisiones del Prototipo 1:** el árbol de archivos son diccionarios anidados y cada directorio guarda a sus hijos por nombre. `archivos` no importa `kernel`, `procesos` ni `disco`, y lleva su propio mapa de bloques (una lista de ocupado/libre). Los permisos son los de Unix (propietario, grupo y otros) y `admin` los ignora. `formatear_disco` borra también los usuarios, salvo `admin`. La raíz se crea con modo `777`, porque el enunciado no tiene una función para cambiar el propietario *(por confirmar)*. En `fs_info`, `bloques` es la lista de bloques del archivo, y en `fs_estado_disco`, `huecos_libres` es la cantidad de grupos de bloques libres seguidos *(por confirmar)*. Función adicional: `reiniciar(config)`, que `kernel.iniciar_sistema` debe llamar *(pendiente de conectar en el kernel)*.
+> Estado: Prototipo 2 (completo).
+- **Algoritmo elegido:** asignación indexada. Cada archivo guarda en su nodo la lista de bloques que ocupa, que hace de índice, como los punteros de un inodo en Unix. Un archivo de N bytes ocupa N / `tam_bloque` bloques, redondeado hacia arriba. Al crecer se le agregan los primeros bloques libres del disco, estén seguidos o no, y al achicarse devuelve los que le sobran desde el final del índice. Todo esto está en una sola función, `_ajustar_bloques`.
+- **Decisiones de diseño:**
+  - **Estructura:** el árbol de archivos son diccionarios anidados y cada directorio guarda a sus hijos por nombre. `archivos` no importa `kernel`, `procesos` ni `disco`, y lleva su propio mapa de bloques (una lista de ocupado/libre). `kernel.iniciar_sistema` llama a `reiniciar(config)`, que toma `bloques_disco` y `tam_bloque`.
+  - **Permisos:** como en Unix (propietario, grupo y otros); `admin` los ignora. Crear un archivo o directorio pide escribir y entrar en la carpeta; sobrescribir pide escribir en el archivo; leer pide leer. `fs_chmod` solo lo puede hacer el dueño o `admin`, con tres dígitos del 0 al 7.
+  - **Borrado:** pide escribir y entrar en la carpeta y, además, ser el dueño o `admin`. La raíz es `777` (el enunciado no tiene una función para cambiar el propietario), así que sin esta regla cualquier cliente podría borrar los archivos de otro; es lo que hace `/tmp` en Unix con el bit *sticky*. Un directorio vacío se borra sin `recursivo`; con contenido lo necesita, y antes de borrar se revisan los permisos de todo lo que hay adentro para no dejar el borrado a medias.
+  - **Enlaces simbólicos:** guardan la ruta destino, que debe existir al crearlos. Se siguen en las rutas intermedias y al leer, escribir, listar y en `chmod`; `fs_info` y `fs_eliminar` actúan sobre el enlace mismo, como en Unix. Hay un límite de 40 saltos, como en Linux, para que un ciclo no se quede dando vueltas.
+  - **Espacio:** si no hay bloques suficientes, `fs_escribir` lanza `ErrorSistema` antes de tocar nada. Los directorios y los enlaces no ocupan bloques; el tamaño de un enlace es el de su ruta destino.
+  - **Formatos:** `formatear_disco` borra también los usuarios, salvo `admin`. En `fs_info`, `bloques` es la lista de bloques del archivo *(por confirmar con el docente si se espera un número)*. En `fs_estado_disco`, `huecos_libres` es la cantidad de grupos de bloques libres seguidos.
 - **Alternativas evaluadas (mínimo 2):**
-  1. Asignación contigua *(por evaluar)*
-  2. Asignación enlazada *(por evaluar)*
-- **Experimento y métricas comparativas:** *(pendiente, Prototipo 2)* misma secuencia de creación, crecimiento y borrado de archivos con semilla fija para cada política; métricas: `huecos_libres` y escrituras que fallan por falta de espacio.
-- **Justificación frente a los requisitos (RF1):** *(pendiente)* En el Prototipo 1 ya se cumple para directorios: sin permiso se lanza `ErrorPermiso`, y bloques usados más bloques libres es igual a bloques totales porque ambos se cuentan sobre el mismo mapa.
-- **Limitaciones:** faltan `fs_escribir`, `fs_leer`, `fs_eliminar`, `fs_chmod` y `fs_enlace_simbolico`; solo acepta rutas absolutas y no interpreta `.` ni `..`; los directorios no ocupan bloques.
+  1. Asignación contigua: cada archivo ocupa bloques seguidos; para crecer necesita que lo de al lado esté libre o hay que moverlo entero a otro hueco.
+  2. Asignación enlazada: cada bloque apunta al siguiente; usa cualquier bloque libre, pero para llegar al bloque k hay que recorrer la cadena desde el primero.
+- **Experimento y métricas comparativas:** `informe/experimentos/experimento_asignacion.py` (se ejecuta con `python informe/experimentos/experimento_asignacion.py`). Las tres políticas atienden la misma carga sobre un disco de 200 bloques: 400 operaciones de crear (35 %, de 1 a 12 bloques), crecer (30 %, de 1 a 6 bloques) y borrar (35 %), generadas con `random.Random(semilla)` y promediadas sobre 5 semillas.
+
+  | Métrica (promedio de 5 semillas) | Contigua | Enlazada | Indexada |
+  |---|---|---|---|
+  | Escrituras que fallaron | 18.2 | 12.0 | 12.0 |
+  | Fallaron habiendo espacio libre suficiente | 17.6 | 0.0 | 0.0 |
+  | Huecos libres promedio | 4.9 | 4.2 | 4.2 |
+  | Bloques que hubo que mover para crecer | 410.2 | 0.0 | 0.0 |
+  | Accesos para llegar a un bloque cualquiera | 1.0 | 4.8 | 1.0 |
+
+  Casi todas las fallas de la contigua (17.6 de 18.2) pasan con espacio libre de sobra, por la fragmentación externa, y además tiene que mover 410 bloques para que los archivos crezcan. Enlazada e indexada solo fallan cuando el disco está lleno de verdad, pero la enlazada necesita en promedio 4.8 accesos para llegar a un bloque, contra 1 de la indexada.
+- **Justificación frente a los requisitos (RF1):**
+  - **Permisos:** toda función que recibe usuario revisa sus permisos antes de cambiar algo. `tests/test_archivos.py` recorre 12 operaciones distintas sin permiso (leer, escribir, agregar, listar, entrar, crear, borrar, `chmod` y enlaces) y comprueba que todas lanzan `ErrorPermiso` sin tocar el disco, y que `admin` sí puede hacerlas.
+  - **Bloques:** usados más libres siempre da el total, porque los dos se cuentan sobre el mismo mapa y `_ajustar_bloques` revisa el espacio antes de reservar. Una prueba hace 300 operaciones al azar con semilla fija en un disco de 40 bloques que se llena varias veces, y después de cada una suma los bloques de todos los archivos y verifica que dé el total sin bloques repetidos.
+- **Limitaciones:**
+  - **Índice:** vive en el nodo y no se modela como un bloque de índice en el disco, que en un disco real costaría un bloque más por archivo y un acceso extra.
+  - **Rutas:** solo se aceptan absolutas (la consola arma las relativas) y no se interpretan `.` ni `..`.
+  - **Asignación:** siempre se toman los primeros bloques libres, sin intentar dejar juntos los de un mismo archivo.
+  - **Disco:** `archivos` no genera solicitudes en `disco.py`, así que leer y escribir archivos no mueve el cabezal ni usa la caché.
 
 ### 2.5 Sincronización e interbloqueos (`sincronizacion.py`)
 - **Mecanismo y estrategia elegidos:**
@@ -161,7 +183,7 @@
 - `tests/test_memoria.py` (36 pruebas): traducción y formato de `tabla_paginas`, copias, `ErrorMemoria` fuera del espacio (RM3) sin cambiar ningún estado, cuota de marcos, víctima del Reloj, LRU y FIFO, reemplazo local estricto y su única excepción, escrituras al swap, `liberar_memoria`, `estado_memoria` (fragmentación interna sumada), `metricas_memoria`, reinicio, hiperpaginación y los ejemplos de la guía (Reloj paso a paso, secuencia clásica de 20 accesos y anomalía de Belady).
 - `tests/test_requisitos_memoria_disco.py` (12 pruebas): formato de los escenarios `memoria.json` y `disco.json`; RM1 con los accesos del escenario y con el kernel completo (se omite mientras `procesos` no ejecute `MEM`); RM3 con procesos reales; liberación de memoria al terminar (por `terminar_proceso` y al terminar solo); RD1 con el kernel completo (C-LOOK ≤ 70 % del desplazamiento de FCFS y espera ≤ 200); y regresiones de la revisión independiente (PID reutilizado tras reiniciar el kernel, acceso de un proceso TERMINADO y fragmentación de procesos que aún no acceden).
 - `tests/test_disco_kernel_simulado.py` (6 pruebas): con un kernel simulado, `("ES", 40)` bloquea al proceso 5 ticks.
-- `tests/test_archivos.py` (23 pruebas): formateo, usuarios, directorios, permisos por propietario, grupo y otros, y conteo de bloques y huecos.
+- `tests/test_archivos.py` (83 pruebas): formateo, usuarios, directorios, escribir y leer (bytes, bloques por tamaño, disco lleno), eliminar (normal, recursivo y sin dejarlo a medias), `chmod`, enlaces simbólicos, permisos por propietario, grupo y otros, y RF1: 12 operaciones sin permiso que deben lanzar `ErrorPermiso` y 300 operaciones al azar verificando que usados más libres dé el total.
 - `tests/test_escenarios.py` (24 pruebas): valida el formato de los escenarios y mide RP1, RP2 y RP3 sobre ellos usando solo funciones del enunciado. Todas pasando tras la integración del catálogo y usuarios en `kernel.cargar_escenario`.
 - `tests/test_prototipo1.py` (17 pruebas): pruebas unitarias y de integración para `kernel.py` y `procesos.py`, verificando el ciclo de 4 pasos, el planificador MLFQ con aging, preempción y el cumplimiento formal de RP1, RP2 y RP3.
 - `tests/test_prototipo2.py` (19 pruebas): pruebas unitarias y de integración para `kernel.py` y `procesos.py` en el Prototipo 2. Valida la asignación incremental de TIDs independientes por proceso, despacho concurrente desacoplado de hilos, el bloqueo exacto y determinista de 5 ticks ante fallo de página en la instrucción `("MEM", dir)`, el cumplimiento del requisito RM3 (proceso infractor termina limpiamente ante `ErrorMemoria` sin afectar a procesos concurrentes) e integración multiprocesador (`num_cpus=2`).
@@ -175,7 +197,7 @@
 
 - **Integrante 1:** `procesos.py`, `kernel.py` y las suites de pruebas `test_prototipo1.py` y `test_prototipo2.py` se desarrollaron con asistencia de modelos de lenguaje (Gemini). El integrante las revisó, ejecutó y adaptó, y puede explicar cada línea.
 - **Integrante 2:** `disco.py`, `memoria.py`, sus pruebas, los escenarios `memoria.json` y `disco.json` y los scripts de `informe/experimentos/` se desarrollaron con asistencia de Claude (Anthropic). El integrante los revisó, ejecutó y adaptó, y puede explicar cada línea.
-- **Integrante 3:** `archivos.py`, los escenarios JSON y sus pruebas se desarrollaron con asistencia de Claude (Anthropic). El integrante los revisó y ejecutó, y puede explicar cada línea.
+- **Integrante 3:** `archivos.py`, los escenarios JSON, el experimento de asignación y sus pruebas se desarrollaron con asistencia de Claude (Anthropic). El integrante los revisó y ejecutó, y puede explicar cada línea.
 - **Integrante 4:** `consola.py`, infraestructura de pruebas y validación del Prototipo 1 se desarrollaron con asistencia de herramientas de IA. El integrante las revisó, ejecutó y adaptó, y puede explicar cada línea.
 
 ---
@@ -186,6 +208,7 @@
 
 ### Prototipo 1 (entrega: 17 de noviembre)
 - **Integrante 2 — disco simple (PR #1):** `disco.py` con FCFS, tiempo de servicio `1 + distancia // 10` y avance por tick (`avanzar_tick`), sin importar `procesos` ni `kernel`. Pruebas unitarias (18) y prueba de contrato con un kernel simulado (6).
+- **Integrante 3 — base de archivos y escenarios (PR #3):** `archivos.py` con usuarios, directorios, permisos tipo Unix y mapa de bloques propio. Cuatro escenarios con el formato del enunciado (`ejemplo_enunciado`, `base`, `inanicion` y `carga_cpu`) y pruebas que miden RP1, RP2 y RP3 solo con funciones del enunciado (24), más pruebas de archivos (23).
 
 ### Prototipo 2 (entrega: 23 de noviembre)
 
@@ -249,3 +272,15 @@
     - Acordar en qué tick vuelve a LISTO un proceso tras un fallo de página (pendiente de la guía 3.3).
   - **Integrante 3:** las funciones `fs_*` pendientes y la reserva y liberación de bloques (RF1).
   - **Integrante 4:** los comandos `free`, `df` y los de archivos; `load` falla con rutas que contienen espacios (`test_consola_comando_load`).
+
+#### 22 de noviembre (4) — Integrante 3: archivos completo (rama `feature/archivos-prototipo2`)
+- **Implementación:** `fs_escribir`, `fs_leer`, `fs_eliminar`, `fs_chmod` y `fs_enlace_simbolico`, con asignación indexada: cada archivo guarda su lista de bloques y toma los primeros libres del disco. `tam_bloque` sale de la configuración.
+- **Decisiones:**
+  - Borrar exige ser el dueño o `admin`, porque la raíz es `777` (como `/tmp` con el bit *sticky*).
+  - El borrado recursivo revisa los permisos de todo lo de adentro antes de borrar, para no dejarlo a medias.
+  - Sin espacio se lanza `ErrorSistema` sin cambiar nada.
+  - Los enlaces se siguen, salvo en `fs_info` y `fs_eliminar`, con un límite de 40 saltos.
+- **Experimento:** `informe/experimentos/experimento_asignacion.py` compara contigua, enlazada e indexada (sección 2.4). La contigua falla 17.6 veces habiendo espacio libre y mueve 410 bloques; la enlazada necesita 4.8 accesos para llegar a un bloque; la indexada, 1.
+- **Pruebas:** `tests/test_archivos.py` pasa de 23 a 83 pruebas, incluida RF1: 12 operaciones sin permiso y 300 operaciones al azar en un disco que se llena.
+- **Integración:** `kernel.resumen_sistema()["bloques_libres"]` ahora consulta `archivos.fs_estado_disco()`, el pendiente que había anotado el Integrante 2. Se hizo después de fusionar la rama del Integrante 1, que tocaba esa misma función. Con `main` actualizado pasan las 270 pruebas.
+- **Pendiente para el Integrante 4:** los comandos de archivos y `df` en la consola; se le pasó qué función de `archivos` usar en cada uno.
