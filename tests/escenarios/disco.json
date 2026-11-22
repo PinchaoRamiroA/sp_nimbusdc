@@ -1,0 +1,819 @@
+{
+ "config": {
+  "num_cpus": 1,
+  "marcos_fisicos": 16,
+  "tam_pagina": 256,
+  "bloques_disco": 200,
+  "tam_bloque": 512,
+  "cache_bloques": 0
+ },
+ "usuarios": [
+  "cliente_a",
+  "cliente_b"
+ ],
+ "semaforos": {},
+ "catalogo": {
+  "respaldo_0": {
+   "memoria_bytes": 1024,
+   "cuota_marcos": 2,
+   "prioridad": 1,
+   "programa": [
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     34
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     145
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     195
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     16
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     65
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     30
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     126
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     194
+    ],
+    [
+     "CPU",
+     1
+    ]
+   ]
+  },
+  "respaldo_1": {
+   "memoria_bytes": 1024,
+   "cuota_marcos": 2,
+   "prioridad": 1,
+   "programa": [
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     120
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     166
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     97
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     53
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     24
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     124
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     7
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     99
+    ],
+    [
+     "CPU",
+     1
+    ]
+   ]
+  },
+  "respaldo_2": {
+   "memoria_bytes": 1024,
+   "cuota_marcos": 2,
+   "prioridad": 1,
+   "programa": [
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     155
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     195
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     196
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     0
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     178
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     114
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     68
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     184
+    ],
+    [
+     "CPU",
+     1
+    ]
+   ]
+  },
+  "respaldo_3": {
+   "memoria_bytes": 1024,
+   "cuota_marcos": 2,
+   "prioridad": 1,
+   "programa": [
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     151
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     26
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     81
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     7
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     5
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     6
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     166
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     138
+    ],
+    [
+     "CPU",
+     1
+    ]
+   ]
+  },
+  "respaldo_4": {
+   "memoria_bytes": 1024,
+   "cuota_marcos": 2,
+   "prioridad": 1,
+   "programa": [
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     97
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     175
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     55
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     108
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     185
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     7
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     135
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     56
+    ],
+    [
+     "CPU",
+     1
+    ]
+   ]
+  },
+  "respaldo_5": {
+   "memoria_bytes": 1024,
+   "cuota_marcos": 2,
+   "prioridad": 1,
+   "programa": [
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     126
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     141
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     59
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     88
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     59
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     173
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     56
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     194
+    ],
+    [
+     "CPU",
+     1
+    ]
+   ]
+  },
+  "respaldo_6": {
+   "memoria_bytes": 1024,
+   "cuota_marcos": 2,
+   "prioridad": 1,
+   "programa": [
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     74
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     5
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     106
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     142
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     164
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     25
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     47
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     161
+    ],
+    [
+     "CPU",
+     1
+    ]
+   ]
+  },
+  "respaldo_7": {
+   "memoria_bytes": 1024,
+   "cuota_marcos": 2,
+   "prioridad": 1,
+   "programa": [
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     30
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     190
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     85
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     184
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     182
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     128
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     108
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     129
+    ],
+    [
+     "CPU",
+     1
+    ]
+   ]
+  },
+  "respaldo_8": {
+   "memoria_bytes": 1024,
+   "cuota_marcos": 2,
+   "prioridad": 1,
+   "programa": [
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     77
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     72
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     150
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     127
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     129
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     100
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     150
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     8
+    ],
+    [
+     "CPU",
+     1
+    ]
+   ]
+  },
+  "respaldo_9": {
+   "memoria_bytes": 1024,
+   "cuota_marcos": 2,
+   "prioridad": 1,
+   "programa": [
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     62
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     190
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     103
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     106
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     170
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     44
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     93
+    ],
+    [
+     "CPU",
+     1
+    ],
+    [
+     "ES",
+     140
+    ],
+    [
+     "CPU",
+     1
+    ]
+   ]
+  }
+ },
+ "llegadas": [
+  {
+   "tick": 14,
+   "programa": "respaldo_0",
+   "usuario": "cliente_a"
+  },
+  {
+   "tick": 13,
+   "programa": "respaldo_1",
+   "usuario": "cliente_b"
+  },
+  {
+   "tick": 7,
+   "programa": "respaldo_2",
+   "usuario": "cliente_a"
+  },
+  {
+   "tick": 0,
+   "programa": "respaldo_3",
+   "usuario": "cliente_b"
+  },
+  {
+   "tick": 14,
+   "programa": "respaldo_4",
+   "usuario": "cliente_a"
+  },
+  {
+   "tick": 14,
+   "programa": "respaldo_5",
+   "usuario": "cliente_b"
+  },
+  {
+   "tick": 9,
+   "programa": "respaldo_6",
+   "usuario": "cliente_a"
+  },
+  {
+   "tick": 6,
+   "programa": "respaldo_7",
+   "usuario": "cliente_b"
+  },
+  {
+   "tick": 15,
+   "programa": "respaldo_8",
+   "usuario": "cliente_a"
+  },
+  {
+   "tick": 11,
+   "programa": "respaldo_9",
+   "usuario": "cliente_b"
+  }
+ ]
+}
