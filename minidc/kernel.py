@@ -37,6 +37,12 @@ def iniciar_sistema(config: dict) -> None:
         archivos.reiniciar(_config)
     except Exception:
         pass
+    try:
+        from minidc import sincronizacion
+        if hasattr(sincronizacion, "reiniciar"):
+            sincronizacion.reiniciar(_config)
+    except Exception:
+        pass
 
 
 def apagar_sistema() -> dict:
