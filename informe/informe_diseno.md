@@ -8,7 +8,43 @@
 
 ## 1. Diagrama y descripción de la arquitectura
 
-*(Incluir diagrama de arquitectura que muestre la interacción entre `kernel`, `procesos`, `memoria`, `disco`, `archivos`, `sincronizacion`, `consola` y `errores`.)*
+El diagrama gráfico está en `NimbusDC_architecture_diagram.pdf` (raíz del repositorio). Este esquema resume quién llama a quién en la versión final:
+
+```text
+                 consola ───────────────► archivos (fs_*, df), memoria (free), procesos (ps, run, kill)
+                    │  load, tick N        devuelve texto; los errores empiezan por "Error:"
+                    ▼
+                 kernel   tick(): 1) llegadas del escenario
+                    │             2) disco.avanzar_tick() y esperas por fallo de página
+                    │             3) 1 tick por CPU (procesos)
+                    │             4) métricas y memoria.controlar_hiperpaginacion() (RM2)
+                    ▼
+                procesos ──► memoria.acceder_memoria(pid, dir)        ("MEM", dir)
+                    │   ├──► disco.encolar_solicitud_disco(pid, b)    ("ES", bloque)
+                    │   └──► sincronizacion.semaforo_wait/signal      ("WAIT"/"SIGNAL")
+                    ▲
+       disco ───────┘ devuelve los PID cuya E/S terminó; kernel llama a procesos.despertar_proceso
+       memoria ─────► procesos.suspender_proceso / reanudar_proceso (reacción a la hiperpaginación)
+
+       errores.py: ErrorSistema y sus derivadas, usadas por todos los módulos
+```
+
+| Módulo | Responsabilidad | Responsable |
+|---|---|---|
+| `kernel.py` | Reloj discreto, ciclo de 4 pasos, carga de escenarios, resumen | Integrante 1 |
+| `procesos.py` | Procesos, hilos, planificación MLFQ, métricas, instrucciones del programa | Integrante 1 |
+| `memoria.py` | Paginación por demanda, reemplazo local (Reloj), hiperpaginación y su reacción | Integrante 2 |
+| `disco.py` | Cola del disco con C-LOOK, cabezal, tiempo de servicio y caché LRU | Integrante 2 |
+| `archivos.py` | Árbol de archivos, permisos Unix, enlaces y asignación indexada de bloques | Integrante 3 |
+| `sincronizacion.py` | Semáforos, mutex, interbloqueos y demostración de condición de carrera | Integrante 4 |
+| `consola.py`, `errores.py` | Intérprete de comandos y jerarquía de excepciones | Integrante 4 |
+
+Reglas de diseño que siguen todos los módulos:
+- **Un único dueño por estructura.** `disco` no importa `procesos`: solo devuelve PID; `memoria` no cambia el estado de un proceso, le pide a `procesos` que lo suspenda o lo reanude. Así ningún módulo deja a otro en un estado inconsistente.
+- **Sin imports circulares en la carga.** `procesos` no importa `kernel`; `memoria` y `procesos` se consultan con imports diferidos (dentro de la función).
+- **Reinicio completo.** Cada módulo tiene `reiniciar(config)` y `kernel.iniciar_sistema` los llama todos, también a la consola.
+- **Errores.** Las funciones lanzan `ErrorSistema` o sus derivadas; solo la consola las convierte en texto que empieza por `Error:`.
+- **Copias.** Las funciones que devuelven listas o diccionarios devuelven copias.
 
 ---
 
@@ -49,22 +85,23 @@
   - Los hilos de un mismo proceso comparten el espacio de direcciones y la cuota de marcos del padre, pero la contabilidad de tiempo de CPU y bloqueos se realiza a nivel de hilo y se agrega al proceso padre sin soporte para afinidad estricta de hilo a CPU en entornos multi-core.
 
 ### 2.2 Gestión de memoria virtual (`memoria.py`)
-> Estado: Prototipo 2 (completo). Responsable: Integrante 2.
-- **Algoritmo elegido:** paginación por demanda con **reemplazo local** y política del **Reloj (segunda oportunidad)**, el plan del equipo de la guía conceptual (sección 5.7). Un proceso nunca tiene más de `cuota_marcos` páginas residentes y solo saca páginas **suyas**.
+> Estado: Prototipos 2 y 3 (completo, incluida la reacción a la hiperpaginación de RM2). Responsable: Integrante 2.
+- **Algoritmo elegido:** paginación por demanda con **reemplazo local** y política del **Reloj (segunda oportunidad)**, el plan del equipo de la guía conceptual (sección 5.7). En operación normal un proceso nunca tiene más de `cuota_marcos` páginas residentes y solo saca páginas **suyas**. Ante la hiperpaginación, **control de carga por conjunto de trabajo** (RM2, ver más abajo).
 - **Cómo funciona:**
   - Traducción con las herramientas de la guía: `ceil(memoria_bytes / tam_pagina)` páginas por proceso y `pagina, desplazamiento = divmod(direccion, tam_pagina)`.
   - **Fallo de página:** (1) si el proceso tiene cuota libre y hay un marco libre, lo usa; (2) si no, la víctima es una de sus propias páginas, elegida por el Reloj: la manecilla recorre las páginas residentes del proceso; si `referenciada` es `True` la pone en `False` y sigue; si es `False`, la reemplaza; (3) única excepción: si el proceso no tiene ninguna página residente y no hay marcos libres, no podría avanzar, y toma un marco del proceso con más marcos. Solo ocurre cuando la suma de las cuotas supera los marcos físicos.
   - Una página `modificada` que sale de memoria cuenta como escritura al swap (`escrituras_a_swap`).
   - **RM3:** la dirección se valida (`0 <= dir < memoria_bytes`) **antes** de tocar cualquier estado. Si está fuera, lanza `ErrorMemoria` y no cambian ni las tablas, ni los marcos, ni las métricas. `procesos` captura la excepción y termina solo al proceso infractor.
   - **Fragmentación interna** (guía 5.4): por proceso, `ceil(bytes / tam_pagina) * tam_pagina - bytes`, sumada para todos los procesos con memoria registrada.
-  - **Hiperpaginación:** se diagnostica cuando más de la mitad de los últimos 32 accesos fueron fallos (mínimo 16 accesos). La reacción (RM2) llega en el Prototipo 3.
+  - **Hiperpaginación:** se diagnostica cuando más de la mitad de los últimos 32 accesos fueron **fallos que obligaron a sacar otra página** (mínimo 16 accesos). Desde el Prototipo 3 no cuentan los fallos que solo llenan un marco libre: cuando un proceso arranca, todos sus primeros accesos fallan, pero eso no es hiperpaginación (la guía 5.9 la define como "cada fallo saca una página que se necesitará enseguida"). Contándolos, la detección se activaba en los 150 escenarios del generador de carga sin que hubiera hiperpaginación (ver la bitácora del 27 de noviembre).
 - **Integración con los otros módulos:**
   - `memoria` no importa `kernel`. Si le preguntan por un PID que nadie registró, lee su `memoria_bytes` y su `cuota_marcos` de `procesos` (import diferido), así que no depende de que `crear_proceso` la llame. Esto resuelve el pendiente de la guía 5.11 ("hay que acordar cómo le llegan el tamaño y la cuota"). También existe `registrar_proceso(pid, memoria_bytes, cuota_marcos)` para registrarlo de forma explícita.
   - Cada registro recuerda de qué proceso de `procesos` salió. Si el kernel se reinicia y los PID vuelven a empezar, el nuevo PID 1 no hereda la memoria del anterior: se registra de nuevo. Un acceso de un proceso TERMINADO lanza `ErrorNoExiste` sin tocar las métricas.
   - `estado_memoria` cuenta a todos los procesos vivos, aunque todavía no hayan accedido a memoria.
   - El bloqueo de 5 ticks por fallo de página lo aplica `procesos`; `memoria` solo informa `fallo_pagina`.
   - Cumple "un proceso que termina libera su memoria" aunque el proceso termine solo: antes de asignar marcos y al reportar su estado, libera los procesos que `procesos` ya marcó como TERMINADO.
-  - Funciones adicionales: `reiniciar(config)` (la llama `kernel.iniciar_sistema`), `registrar_proceso` y `_fijar_politica` (solo para experimentos).
+  - Funciones adicionales: `reiniciar(config)` (la llama `kernel.iniciar_sistema`), `registrar_proceso`, `controlar_hiperpaginacion()` (la llama `kernel.tick` en el paso 4), `estado_control_carga()` (reacciones, suspendidos y límites) y, solo para experimentos, `_fijar_politica` y `_fijar_reaccion`.
+  - Para suspender, `memoria` usa tres funciones nuevas de `procesos` (cambio acordado en el Prototipo 3, ver la bitácora): `puede_suspenderse`, `suspender_proceso` y `reanudar_proceso`. El estado del proceso lo sigue cambiando solo `procesos`.
 - **Alternativas evaluadas (mínimo 2):**
   1. **LRU, local.** Sale la página usada hace más tiempo.
   2. **FIFO, local.** Sale la página cargada hace más tiempo, aunque se esté usando mucho.
@@ -79,18 +116,56 @@
   | Nominal, rango en las 5 semillas | 0,165–0,203 | 0,141–0,182 | 0,179–0,215 |
   | Sobrecarga (Σcuotas = 22 > 16 marcos), promedio | 0,362 | **0,342** | 0,369 |
 
-  - **Con el kernel completo** (rama `feature/nucleo-prototipo2` del Integrante 1 + este módulo): el escenario `tests/escenarios/memoria.json` termina con **16,5 % de fallos** y los 16 marcos libres al final.
+  - **Con el kernel completo** (desde el Prototipo 2, y sin cambios con la reacción de RM2): el escenario `tests/escenarios/memoria.json` termina con **16,5 % de fallos** y los 16 marcos libres al final.
 - **Justificación frente a los requisitos (RM1–RM3):**
   - **RM1:** 16,5 % con el kernel completo y como máximo 20,3 % en las 5 semillas: por debajo del 25 %.
   - **RM3:** la validación previa garantiza que un acceso inválido no modifica nada, y el reemplazo local impide que un proceso le saque páginas a otro. Lo comprueban `test_acceso_invalido_no_cambia_ningun_estado`, `test_reemplazo_local_no_quita_marcos_a_otro_proceso` y `test_rm3_proceso_real_fuera_de_su_espacio_no_afecta_a_otros`.
   - **Por qué el Reloj y no LRU:** LRU tuvo 1,8 puntos menos de fallos, pero ambos cumplen RM1 con margen. El Reloj es el plan del equipo y usa el bit `referenciada` de la tabla de páginas del enunciado; LRU exacto requiere guardar el instante de cada acceso, algo que el hardware real no hace. LRU queda implementado: cambiarlo es una línea (`_POLITICA`).
 - **Limitaciones:**
-  - Con memoria sobrecomprometida la tasa sube a ~36 % y no cumple RM1: es el caso de hiperpaginación que el Prototipo 3 debe atender (RM2).
+  - Sin reacción, con memoria sobrecomprometida la tasa sube a ~36 % en el experimento de reemplazo y no cumple RM1. Ese caso lo atiende la reacción de RM2 (abajo).
   - El Reloj, igual que FIFO, puede sufrir la anomalía de Belady (lo muestra la prueba `test_anomalia_de_belady`).
   - La excepción de "sin páginas propias" quita un marco a otro proceso; solo ocurre si Σcuotas > marcos.
   - El swap no se modela como dispositivo: las escrituras al swap solo se cuentan, no consumen ticks de disco (duda abierta de la guía 7.5).
   - La carga del experimento tiene localidad diseñada (85 % de accesos a `cuota − 1` páginas calientes); el resultado depende de esa localidad. El experimento intercala un acceso por proceso y no modela el bloqueo de 5 ticks; con reemplazo local y cuotas que caben no cambia la tasa (el kernel completo da el mismo 16,5 %).
   - El escenario `memoria.json` usa `("MEM", dir)` de dos elementos, como define el enunciado, sin indicar escritura; por eso con el kernel `escrituras_a_swap` es 0, aunque el experimento sí mide escrituras.
+
+#### Reacción a la hiperpaginación (RM2, Prototipo 3)
+- **Algoritmo elegido: control de carga por conjunto de trabajo.** `kernel.tick` llama a `memoria.controlar_hiperpaginacion()` en el paso 4 de cada tick. Si se detecta hiperpaginación:
+  1. **Demanda de cada proceso:** su conjunto de trabajo, es decir, las páginas distintas de sus últimos 16 accesos, y como mínimo su cuota (con poco historial el conjunto de trabajo se queda corto: un proceso con 3 accesos parecería necesitar 3 marcos).
+  2. **Quién se queda:** en orden de importancia (prioridad original, 0 = web primero; a igual prioridad, el más antiguo), cada proceso se queda en memoria si su demanda cabe en los marcos que quedan; su límite pasa a ser su demanda, **aunque pase de su cuota**. Los que no se pueden suspender (con hilos, semáforos, mutex o E/S de disco en curso) se quedan siempre, con al menos 1 marco.
+  3. **Los que no caben se suspenden:** `procesos.suspender_proceso` los deja BLOQUEADO, fuera de la cola y de la CPU, y `memoria` saca todas sus páginas (las modificadas van al swap). Si nadie cupo, el más importante se queda con lo que haya, para que el sistema siempre avance.
+  4. **Se vuelve a evaluar cada 8 accesos** mientras siga la hiperpaginación: el conjunto de trabajo se estima mejor con más historial. En el caso de cuota chica, la primera evaluación ve 4–5 páginas por proceso y la segunda ya ve las 8.
+  5. **Reanudar:** en cada tick sin hiperpaginación se reanuda, en orden de importancia, a los suspendidos cuya demanda cabe en los marcos libres que nadie más tiene reservados. También se reanuda al más importante si ya no queda nadie activo y, por **envejecimiento**, a quien lleve 300 ticks suspendido, aunque no quepa: si vuelve la hiperpaginación, en la siguiente evaluación se queda él (es más antiguo) y se suspende a uno más nuevo. Cuando ya no queda nadie suspendido, a quien se le bajó el límite por debajo de su cuota vuelve a su cuota apenas hay marcos.
+- **Por qué pasar de la cuota durante la reacción:** el enunciado define `cuota_marcos` como el máximo residente, y en operación normal se respeta siempre (lo comprueba `test_nunca_supera_la_cuota_de_marcos`). Pero si un proceso necesita 8 páginas y su cuota es 2, ninguna reacción que respete la cuota puede bajar su tasa: con el Reloj (y con LRU o FIFO), recorrer 8 páginas con 2 marcos falla en todos los accesos. La reacción es una medida de emergencia del sistema operativo: presta marcos a quien los está usando y los recupera al suspender o cuando el proceso termina. Es la opción "dar más marcos a quien más los necesita" de la guía (5.9), combinada con la de "suspender a algún proceso".
+- **Alternativas evaluadas** (todas implementadas, se eligen con `_fijar_reaccion`):
+  1. **SUSPENDER:** se suspenden los menos importantes hasta que las cuotas de los que quedan quepan en memoria; nadie pasa de su cuota.
+  2. **PRESTAR_LIBRES:** sin suspender a nadie, los marcos libres se prestan a quien necesita más de los que tiene.
+  3. **NINGUNA:** solo se detecta (línea base).
+- **Experimento:** `python informe/experimentos/experimento_hiperpaginacion.py`. Cada escenario se carga con `kernel.cargar_escenario` y se corre hasta que todos terminan. "Tasa 50 t" es la tasa de fallos de los accesos hechos en los 50 ticks siguientes a la primera detección, que es lo que pide RM2; "tasa antes" es la tasa acumulada en el momento de la detección.
+
+  | A) Cuota chica: 6 analíticas recorren 8 páginas en ciclo con cuota 2 (las cuotas caben en 16 marcos) | Tasa total | Tasa antes | Tasa 50 t | Ticks | CPU |
+  |---|---|---|---|---|---|
+  | NINGUNA | 1,000 | 1,000 | 1,000 | 1445 | 1,00 |
+  | SUSPENDER | 1,000 | 1,000 | 1,000 | 1445 | 1,00 |
+  | PRESTAR_LIBRES | 1,000 | 1,000 | 1,000 | 1445 | 1,00 |
+  | **CONJUNTO_TRABAJO** | **0,093** | 1,000 | **0,545** | 1522 | 0,95 |
+
+  | B) Sobrecarga: 6 analíticas (cuota 4, fases de 4 páginas) y 2 web en 12 marcos (cuotas: 28); promedio de 5 semillas | Tasa total | Tasa antes | Tasa 50 t | Ticks | CPU |
+  |---|---|---|---|---|---|
+  | NINGUNA | 0,958 | 0,958 | 0,941 | 940,2 | 0,98 |
+  | SUSPENDER | **0,146** | 0,958 | **0,268** | 947,0 | 0,98 |
+  | PRESTAR_LIBRES | 0,958 | 0,958 | 0,941 | 940,2 | 0,98 |
+  | **CONJUNTO_TRABAJO** | 0,152 | 0,958 | **0,268** | 952,8 | 0,97 |
+
+  - **C) Nominal** (`memoria.json`, RM1): ninguna reacción se activa porque no hay hiperpaginación; las cuatro dan 16,5 % y 540 ticks.
+  - **Robustez (fuera del repositorio):** 300 escenarios generados al azar (150 con el generador de `test_carga.py` y 150 con analíticas que recorren de 3 a 10 páginas en ciclo, de 1 a 3 CPU y de 8 a 32 marcos), revisando en cada tick que cuadren estados, colas, CPU y marcos, que cada suspendido esté BLOQUEADO y sin marcos, y que todo termine y libere la memoria. Se cumplió en los 300. Ningún proceso pasó más de 301 ticks seguidos suspendido y la peor espera seguida en LISTO fue de 92 ticks (RP2). De los 149 con hiperpaginación, la tasa total bajó en 147 (en promedio, de 0,901 a 0,342) y la de los 50 ticks siguientes bajó en 101 (ver limitaciones).
+- **Justificación frente a RM2:** es la única de las cuatro que baja la tasa en los dos tipos de hiperpaginación: cuando la memoria no alcanza para las cuotas (B, igual que SUSPENDER) y cuando la cuota no alcanza para lo que el proceso usa (A, donde las otras tres se quedan en 100 %). En el escenario de las pruebas, `tests/escenarios/hiperpaginacion.json` (B, semilla 1), la hiperpaginación se detecta en el tick 56 con una tasa acumulada de 0,83; en los 50 ticks siguientes la tasa es 0,27 (sin reacción sería 0,97) y al terminar queda en 15 % (sin reacción, 99 %), por debajo incluso del 25 % de RM1. Sin hiperpaginación no cambia nada (C), así que no afecta a RM1, RP1, RP2 ni RP3: ninguno de los escenarios del equipo (`base`, `carga_cpu`, `inanicion`, `integracion`, `memoria`, `disco`) la activa.
+- **Limitaciones:**
+  - **Los primeros 50 ticks son de carga.** Cada página que le falta a un proceso admitido cuesta un fallo de 5 ticks, así que cargar un conjunto de trabajo de 8 a 10 páginas consume 40 a 50 ticks. Por eso en 48 de los 149 escenarios al azar la tasa de los 50 ticks siguientes todavía no baja, aunque la total sí. Lo mismo pasa si el conjunto de trabajo de un solo proceso es mayor que toda la memoria: ninguna reacción lo arregla con el Reloj.
+  - **Menos concurrencia.** En este simulador un fallo de página no gasta CPU ni disco (solo bloquea 5 ticks), así que la hiperpaginación no baja la utilización si hay suficientes procesos. Suspender sí la baja: en los 149 escenarios al azar la utilización pasó de 0,726 a 0,603 y los escenarios tardaron más (de 862 a 1237 ticks en promedio). En un sistema real cada fallo usa el disco y la reacción también mejoraría el tiempo; aquí la ganancia se ve en la tasa de fallos y en el swap.
+  - El préstamo de marcos por encima de la cuota es una decisión de diseño (ver arriba); si el docente exige la cuota como límite absoluto también durante la reacción, basta con `_fijar_reaccion("SUSPENDER")`, que cumple RM2 en la sobrecarga (B) pero no en la cuota chica (A).
+  - No se suspende a procesos con hilos, semáforos, mutex o E/S en curso: si todos los que causan la hiperpaginación son de ese tipo, la reacción solo puede bajarles el límite a 1 marco.
+  - El orden de importancia usa la prioridad original; un flujo continuo de procesos más prioritarios puede demorar a un suspendido, pero el envejecimiento lo reanuda a los 300 ticks como máximo.
 
 ### 2.3 Planificación de disco y caché (`disco.py`)
 > Estado: Prototipo 2 (completo). Responsable: Integrante 2.
@@ -185,25 +260,27 @@
 
 - `tests/test_disco.py` (41 pruebas): fórmula de servicio, cancelar, reiniciar, validaciones y métricas (Prototipo 1); orden C-LOOK con salto, desempate por antigüedad, ahorro ≥ 30 % frente a FCFS en 5 semillas, que C-LOOK no deje esperando a una solicitud lejana, `estadisticas_espera`, el ejemplo de la guía con el cabezal en 53 (FCFS, SSTF y C-LOOK), que un flujo al bloque del cabezal no deje esperando a otra, validación de la configuración, y caché LRU: aciertos sin mover el cabezal, expulsión LRU, escritura directa, capacidad 0, cancelación y reinicio (Prototipo 2).
 - `tests/test_memoria.py` (36 pruebas): traducción y formato de `tabla_paginas`, copias, `ErrorMemoria` fuera del espacio (RM3) sin cambiar ningún estado, cuota de marcos, víctima del Reloj, LRU y FIFO, reemplazo local estricto y su única excepción, escrituras al swap, `liberar_memoria`, `estado_memoria` (fragmentación interna sumada), `metricas_memoria`, reinicio, hiperpaginación y los ejemplos de la guía (Reloj paso a paso, secuencia clásica de 20 accesos y anomalía de Belady).
-- `tests/test_requisitos_memoria_disco.py` (12 pruebas): formato de los escenarios `memoria.json` y `disco.json`; RM1 con los accesos del escenario y con el kernel completo (se omite mientras `procesos` no ejecute `MEM`); RM3 con procesos reales; liberación de memoria al terminar (por `terminar_proceso` y al terminar solo); RD1 con el kernel completo (C-LOOK ≤ 70 % del desplazamiento de FCFS y espera ≤ 200); y regresiones de la revisión independiente (PID reutilizado tras reiniciar el kernel, acceso de un proceso TERMINADO y fragmentación de procesos que aún no acceden).
+- `tests/test_hiperpaginacion.py` (19 pruebas, Prototipo 3): la detección solo cuenta fallos que sacan otra página; `suspender_proceso` y `reanudar_proceso` (cola, CPU, fallo de página en curso, `kill` a un suspendido, quién no se puede suspender); la reacción por conjunto de trabajo (quién se queda y con cuántos marcos, prioridad, swap al suspender, reanudar hasta que todos terminen, envejecimiento de 300 ticks); la línea base sin reacción; RM2 con el kernel en `hiperpaginacion.json` y en el caso de cuota chica; y que `memoria.json` no cambie (RM1 sigue en 16,5 %). Se comprobó que detectan errores: quitar la llamada del kernel, dejar que un suspendido despierte tras su fallo de página, contar todos los fallos como hiperpaginación, no pasar nunca de la cuota o quitar el envejecimiento hace fallar al menos una prueba.
+- `tests/test_requisitos_memoria_disco.py` (12 pruebas): formato de los escenarios `memoria.json` y `disco.json`; RM1 con los accesos del escenario y con el kernel completo; RM3 con procesos reales; liberación de memoria al terminar (por `terminar_proceso` y al terminar solo); RD1 con el kernel completo (C-LOOK ≤ 70 % del desplazamiento de FCFS y espera ≤ 200); y regresiones de la revisión independiente (PID reutilizado tras reiniciar el kernel, acceso de un proceso TERMINADO y fragmentación de procesos que aún no acceden).
 - `tests/test_disco_kernel_simulado.py` (6 pruebas): con un kernel simulado, `("ES", 40)` bloquea al proceso 5 ticks.
 - `tests/test_archivos.py` (95 pruebas): formateo, usuarios, directorios, escribir y leer (bytes, bloques por tamaño, disco lleno), eliminar (normal, recursivo y sin dejarlo a medias), `chmod`, enlaces simbólicos, permisos por propietario, grupo y otros, rutas con `.` y `..`, entradas que no son texto, y RF1: 12 operaciones sin permiso que deben lanzar `ErrorPermiso` y 300 operaciones al azar verificando que usados más libres dé el total.
 - `tests/test_escenarios.py` (27 pruebas): valida el formato de los 5 escenarios propios, comprueba que cada llegada cree su proceso en su tick y mide RP1, RP2 y RP3. Los escenarios se cargan con `kernel.cargar_escenario`, como lo hace el docente, y solo se usan funciones del enunciado.
-- `tests/test_integracion.py` (41 pruebas): el sistema completo, con todos los módulos a la vez. Reglas del enunciado (estructura obligatoria, solo biblioteca estándar, hilos y `time` solo en la demo de carrera), el ejemplo del enunciado de punta a punta, el escenario `integracion.json` con los 4 servicios en 2 CPU, que `iniciar_sistema` reinicie todo (también la consola), determinismo, `ES` y `MEM` con sus tiempos exactos, liberación de memoria, disco, semáforos y mutex al terminar un proceso, robustez ante programas inválidos, flujos de consola con dos usuarios y 16 entradas inválidas, y RS1, RS2 y RM2. Las 5 pruebas de sincronización se saltan mientras `sincronizacion.py` no esté implementado, y la de RM2 está marcada como fallo esperado hasta que exista esa reacción; las dos marcas llevan su motivo escrito.
+- `tests/test_integracion.py` (41 pruebas): el sistema completo, con todos los módulos a la vez. Reglas del enunciado (estructura obligatoria, solo biblioteca estándar, hilos y `time` solo en la demo de carrera), el ejemplo del enunciado de punta a punta, el escenario `integracion.json` con los 4 servicios en 2 CPU, que `iniciar_sistema` reinicie todo (también la consola), determinismo, `ES` y `MEM` con sus tiempos exactos, liberación de memoria, disco, semáforos y mutex al terminar un proceso, robustez ante programas inválidos, flujos de consola con dos usuarios y 16 entradas inválidas, y RS1, RS2 y RM2. Las 5 pruebas de sincronización se saltan mientras `sincronizacion.py` no esté implementado (la marca lleva su motivo escrito). La de RM2 pasa desde el Prototipo 3 y ya no tiene la marca de fallo esperado.
 - `tests/test_carga.py` (34 pruebas): escenarios generados al azar con semilla fija (1 a 3 CPU, memoria y disco variados, los 4 servicios y hasta 100 procesos) y cargados con el kernel. En cada tick revisa que los estados, la cola de listos, las CPU, los marcos y el resumen del kernel cuadren. Además comprueba que todo termine y se libere, RP2 bajo carga y con procesos largos de la misma prioridad, RP3 con 1, 2 y 3 CPU, y 500 comandos de consola de 3 usuarios cumpliendo RF1. Cada escenario se corre una sola vez y se revisa todo en esa corrida; el archivo tarda menos de 2 segundos.
 - `tests/test_prototipo1.py` (17 pruebas): pruebas unitarias y de integración para `kernel.py` y `procesos.py`, verificando el ciclo de 4 pasos, el planificador MLFQ con aging, preempción y el cumplimiento formal de RP1, RP2 y RP3.
 - `tests/test_prototipo2.py` (19 pruebas): pruebas unitarias y de integración para `kernel.py` y `procesos.py` en el Prototipo 2. Valida la asignación incremental de TIDs independientes por proceso, despacho concurrente desacoplado de hilos, el bloqueo exacto y determinista de 5 ticks ante fallo de página en la instrucción `("MEM", dir)`, el cumplimiento del requisito RM3 (proceso infractor termina limpiamente ante `ErrorMemoria` sin afectar a procesos concurrentes) e integración multiprocesador (`num_cpus=2`).
 - `tests/test_prototipo3.py` (17 pruebas): pruebas unitarias y de integración para `kernel.py` y `procesos.py` en el Prototipo 3. Valida la adquisición inmediata de semáforos disponibles, el bloqueo determinista ante `WAIT` en 0, despertar inmediato y reincorporación a la cola MLFQ tras `SIGNAL`, exclusión mutua estricta en recursos compartidos (`"bd"`), concurrencia multihilo con semáforos, prevención de interbloqueos huérfanos mediante liberación automática al invocar `terminar_proceso`, preservación de prioridades y aging, ejecución multiprocesador (`num_cpus=2`) y consistencia en las métricas de `apagar_sistema`.
 - `tests/test_consola.py` (35 pruebas): pruebas para `consola.py`, verificando comandos de procesos (`ps`, `kill`, `run` con catálogo del escenario, `tick`, `top`), comandos de archivos (`pwd`, `cd`, `ls` con `-l`, `mkdir`, `touch`, `cat`, `echo` con `>` y `>>`, `rm` con `-r`, `chmod`, `ln -s`, `tree`), comandos de recursos (`free` y `df`), el aislamiento de `historial` y `directorio_actual` por usuario, las variantes de Windows (`tasklist`, `taskkill`, `dir`, `md`, `type`, `del`, `mklink`), el formato obligatorio de errores (`Error:...`), control de permisos entre usuarios sobre el sistema de archivos y soporte de rutas con espacios en `load`.
 - `tests/test_estructura.py` (9 pruebas): verificación de importaciones públicas, jerarquía de excepciones en `errores.py` y coincidencia exacta de firmas obligatorias.
-- Escenarios en `tests/escenarios/` (formato del enunciado): `ejemplo_enunciado.json` (el ejemplo del enunciado), `base.json` (mezcla de web, respaldo y analítica; RP1), `inanicion.json` (un servicio web cada 4 ticks frente a una analítica de baja prioridad; RP2) y `carga_cpu.json` (tres analíticas y cinco web; RP3). En los escenarios propios la prioridad 0 es la más alta, como en el planificador del equipo. Prototipo 2: `memoria.json` (analítica, dos web y respaldo con accesos `("MEM", dir)` con localidad; Σcuotas = 15 ≤ 16 marcos; RM1) y `disco.json` (10 procesos de respaldo con 8 E/S a bloques al azar; RD1). Ambos se regeneran con `--guardar` desde los scripts de `informe/experimentos/`. Prototipo 3: `integracion.json` (los 4 servicios en 2 CPU, el semáforo `bd` y 13 llegadas; lo usa `test_integracion.py`).
+- Escenarios en `tests/escenarios/` (formato del enunciado): `ejemplo_enunciado.json` (el ejemplo del enunciado), `base.json` (mezcla de web, respaldo y analítica; RP1), `inanicion.json` (un servicio web cada 4 ticks frente a una analítica de baja prioridad; RP2) y `carga_cpu.json` (tres analíticas y cinco web; RP3). En los escenarios propios la prioridad 0 es la más alta, como en el planificador del equipo. Prototipo 2: `memoria.json` (analítica, dos web y respaldo con accesos `("MEM", dir)` con localidad; Σcuotas = 15 ≤ 16 marcos; RM1) y `disco.json` (10 procesos de respaldo con 8 E/S a bloques al azar; RD1). Ambos se regeneran con `--guardar` desde los scripts de `informe/experimentos/`. Prototipo 3: `integracion.json` (los 4 servicios en 2 CPU, el semáforo `bd` y 13 llegadas; lo usa `test_integracion.py`) y `hiperpaginacion.json` (6 analíticas con fases de 4 páginas y cuota 4, y 2 web, en 12 marcos: las cuotas suman 28; RM2; se regenera con `--guardar` desde `experimento_hiperpaginacion.py`).
+- **Total:** 408 pruebas; pasan 403 y se saltan 5 (las de sincronización, hasta que se implemente `sincronizacion.py`). Se ejecutan con `python -m pytest` en unos 5 segundos.
 
 ---
 
 ## 4. Declaración de uso de herramientas de IA e integridad académica
 
 - **Integrante 1:** `procesos.py`, `kernel.py` y las suites de pruebas `test_prototipo1.py`, `test_prototipo2.py` y `test_prototipo3.py` se desarrollaron con asistencia de modelos de lenguaje (Gemini). El integrante analizó y diseñó la arquitectura de colas multinivel con aging, el modelo de hilos simulados, la integración de fallos de página (5 ticks), las primitivas de sincronización WAIT/SIGNAL y la prevención de interbloqueos huérfanos, validando exhaustivamente cada caso con `pytest`, y puede explicar y modificar cualquier parte del código en la sustentación.
-- **Integrante 2:** `disco.py`, `memoria.py`, sus pruebas, los escenarios `memoria.json` y `disco.json` y los scripts de `informe/experimentos/` se desarrollaron con asistencia de Claude (Anthropic). El integrante los revisó, ejecutó y adaptó, y puede explicar cada línea.
+- **Integrante 2:** `disco.py`, `memoria.py` (incluida la reacción a la hiperpaginación), las funciones de suspensión de `procesos.py` y la llamada en `kernel.tick`, sus pruebas, los escenarios `memoria.json`, `disco.json` e `hiperpaginacion.json` y los scripts `experimento_memoria.py`, `experimento_disco.py` y `experimento_hiperpaginacion.py` se desarrollaron con asistencia de Claude (Anthropic). El integrante los revisó, ejecutó y adaptó, y puede explicar cada línea.
 - **Integrante 3:** `archivos.py`, los escenarios JSON, el experimento de asignación, las pruebas de archivos, escenarios, integración y carga, y las correcciones del Prototipo 3 en `procesos.py`, `kernel.py` y `consola.py` se desarrollaron con asistencia de Claude (Anthropic). El integrante los revisó y ejecutó, y puede explicar cada línea.
 - **Integrante 4:** `consola.py`, comandos de archivos y recursos, infraestructura de pruebas y validación de los Prototipos 1 y 2 se desarrollaron con asistencia de herramientas de IA. El integrante las revisó, ejecutó y adaptó, y puede explicar cada línea.
 
@@ -331,3 +408,28 @@
 - **Tiempo:** `test_carga.py` corría cada escenario dos veces, una para revisar el sistema y otra para medir RP2. Ahora lo corre una sola vez y revisa las dos cosas en esa corrida, y reutiliza la lista de procesos de cada tick en vez de pedirla varias veces. Revisa lo mismo y tarda la mitad.
 - **Resultado:** pasan 383, se saltan 5 (sincronización) y queda 1 fallo esperado (RM2), en unos 2 segundos, con Python 3.11 y 3.13.
 - **Antes de la entrega (29 de noviembre):** cuando se fusionen `sincronizacion.py` (Integrante 4) y RM2 (Integrante 2), quitar los `skip` y `xfail` que ya no apliquen y volver a correr todo.
+
+#### 27 de noviembre — Integrante 2: reacción a la hiperpaginación, RM2 (rama `feature/memoria-prototipo3`)
+- **Análisis inicial** (con `main` actualizado, después del PR #10):
+  - Pasaban 383 pruebas, se saltaban 5 (sincronización) y quedaba 1 fallo esperado: `test_rm2_la_tasa_de_fallos_baja_despues_de_detectar_hiperpaginacion`, el pendiente del Integrante 2.
+  - `memoria.py` detectaba la hiperpaginación, pero nadie reaccionaba. El caso de esa prueba (6 procesos que recorren 8 páginas con cuota 2) falla en el 100 % de los accesos con cualquier política de reemplazo, porque la cuota no alcanza para lo que cada proceso usa.
+  - La guía (5.9) propone dos reacciones: suspender procesos o dar más marcos a quien los necesita. Una reacción real necesita que `procesos` deje de ejecutar a los suspendidos, así que hacía falta un cambio pequeño en `procesos.py` y en `kernel.py` (Integrante 1). **Se acordó** hacerlo con funciones nuevas y sin cambiar el comportamiento existente.
+- **Implementación:**
+  - `memoria.py`: la detección cuenta solo los fallos que sacan otra página; `controlar_hiperpaginacion()` hace el control de carga por conjunto de trabajo (sección 2.2); `estado_control_carga()`; alternativas con `_fijar_reaccion`.
+  - `procesos.py`: `puede_suspenderse`, `suspender_proceso` y `reanudar_proceso`, y un proceso suspendido que termina su fallo de página sigue BLOQUEADO. No se suspende a procesos con hilos, semáforos, mutex o E/S en curso.
+  - `kernel.py`: una línea en el paso 4 del tick que llama a `memoria.controlar_hiperpaginacion()`.
+- **Decisiones tomadas con experimentos** (`experimento_hiperpaginacion.py` y pruebas de robustez):
+  1. **Detección solo con fallos que reemplazan.** Al arrancar, todos los accesos de un proceso fallan aunque haya marcos libres. Contando todos los fallos, la detección se activaba en los 150 escenarios del generador de `test_carga.py` (pocos accesos por proceso, casi todos de arranque): la reacción suspendía procesos sin necesidad, la utilización media bajaba de 0,888 a 0,847 y la tasa de fallos no mejoraba (0,936 contra 0,934). Contando solo los que reemplazan, no se activa en ninguno.
+  2. **Volver a evaluar cada 8 accesos.** La primera reacción ocurre cuando cada proceso lleva unos 4 accesos y ve 4–5 páginas de las 8 que usa; esperar una ventana completa (32 accesos) para corregir tardaba unos 60 ticks y la prueba de RM2 seguía fallando. Con 8 accesos converge en la segunda evaluación.
+  3. **La demanda es como mínimo la cuota.** En la sobrecarga, con las semillas 2 y 3, la reacción quedaba peor que SUSPENDER (0,23 contra 0,12): un proceso suspendido tras 3 accesos se reanudaba con 3 marcos para un conjunto de 4 páginas y fallaba en todos sus accesos durante cientos de ticks. Con la cuota como mínimo las dos quedan iguales.
+  4. **Orden de admisión por importancia.** Se probó admitir primero a quien le faltan menos páginas (vuelve a acertar antes); en los escenarios al azar no mejoró (99 contra 101 de 149) y empeoró el caso de cuota chica, así que se dejó el orden por prioridad y antigüedad, que es más fácil de explicar.
+  5. **Envejecimiento de 300 ticks.** Sin él, un suspendido podía esperar mucho si seguían llegando procesos. Con 100 ticks la rotación costaba muchos fallos (en la sobrecarga la tasa pasaba de 0,128 a 0,269); con 300 la cuota chica mejora (de 0,144 a 0,093) y la sobrecarga casi no cambia (0,152), y nadie queda más de 300 ticks suspendido.
+  6. **Tamaño del historial (16 accesos).** Con 6 no alcanza a ver un ciclo de 8 páginas; de 8 a 16 da los mismos resultados, y se dejó 16.
+- **Resultados:** RM2 se cumple en el escenario de las pruebas (tasa de 0,27 en los 50 ticks siguientes, frente a 0,83 acumulada al detectar y 0,97 sin reacción) y en el de cuota chica (0,545, y 0 a partir de los 50 ticks siguientes). El escenario nominal no cambia (RM1, 16,5 %). Ninguno de los escenarios del equipo activa la reacción, así que RP1–RP3, RM1, RD1 y RF1 quedan igual.
+- **Robustez (fuera del repositorio):** 300 escenarios al azar revisados tick a tick: todo cuadra, todo termina y libera memoria, cada suspendido está BLOQUEADO y sin marcos, nadie pasa de 301 ticks suspendido y la peor espera en LISTO es de 92 ticks. Limitación encontrada y documentada: en 48 de 149 escenarios con hiperpaginación la tasa de los primeros 50 ticks todavía no baja, porque los procesos admitidos están cargando su conjunto de trabajo (5 ticks por página), aunque la tasa total sí baja en 147.
+- **Pruebas:** `tests/test_hiperpaginacion.py` (19) y el escenario `hiperpaginacion.json`. Se quitó el `xfail` de RM2 en `test_integracion.py` (ya pasa) y el `skip` de RM1 con el kernel en `test_requisitos_memoria_disco.py` (`procesos` ejecuta `MEM` desde el Prototipo 2). Para comprobar que las pruebas detectan errores se dañaron a propósito 5 partes de la reacción y cada una hace fallar al menos una prueba.
+- **Commits** (cada uno verificado exportándolo a una carpeta limpia y corriendo `pytest`): memoria, procesos y kernel, experimento y escenario, pruebas, e informe.
+- **Resultado:** pasan 403 y se saltan 5 (sincronización), sin fallos esperados.
+- **Pendientes de otros integrantes (sin modificar su código):**
+  - **Integrante 4:** implementar `sincronizacion.py` y quitar los 5 `skip`. Para `detectar_interbloqueo`: un proceso suspendido por memoria aparece BLOQUEADO con `suspendido = True`, pero no espera ningún semáforo ni mutex (no se suspende a quien los tiene o los espera), así que no forma parte de ningún ciclo. Opcional: que `free` muestre `memoria.estado_control_carga()` (suspendidos y reacciones).
+  - **Integrante 1:** revisar las tres funciones nuevas de `procesos.py` y la llamada en `kernel.tick`.
