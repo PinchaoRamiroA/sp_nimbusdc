@@ -614,3 +614,45 @@ def test_exclusion_mutua_entre_hilos_del_mismo_proceso(entorno_prototipo3):
     kernel.tick()
     assert all(h["estado"] == "TERMINADO" for h in hilos)
     assert procesos.estado_proceso(pid) == "TERMINADO"
+
+
+def test_crear_hilo_en_proceso_bloqueado_por_fallo_pagina():
+    """18. Crear un hilo en un proceso bloqueado por fallo de página no debe dejarlo bloqueado para siempre."""
+    kernel.iniciar_sistema({
+        "num_cpus": 1,
+        "marcos_fisicos": 64,
+        "tam_pagina": 256,
+        "bloques_disco": 200,
+        "tam_bloque": 512,
+        "cache_bloques": 8,
+    })
+
+    pid = procesos.crear_proceso("p_fallo_hilo", "admin", [("MEM", 0), ("CPU", 2)])
+
+    # Tick 1: intenta acceder a memoria, sufre fallo de página y queda BLOQUEADO por 5 ticks
+    kernel.tick()
+    assert procesos.estado_proceso(pid) == "BLOQUEADO"
+    assert procesos._procesos[pid]["espera_fallo_memoria"] == 5
+
+    # Durante el bloqueo se crea un hilo nuevo en estado LISTO
+    tid = procesos.crear_hilo(pid, [("CPU", 1)])
+    assert tid == 1
+    assert procesos._procesos[pid]["hilos"][0]["estado"] == "LISTO"
+    assert procesos.estado_proceso(pid) == "LISTO"
+    assert pid in procesos.cola_listos()
+
+    # Tick 2: el nuevo hilo listo recibe CPU mientras el contador de fallo avanza a 4
+    kernel.tick()
+    hilo = procesos._procesos[pid]["hilos"][0]
+    assert hilo["cpu_usada"] == 1
+    assert hilo["estado"] == "TERMINADO"
+
+    # Ejecutar los ticks restantes para completar el fallo original y la CPU del proceso
+    for _ in range(10):
+        if procesos.estado_proceso(pid) == "TERMINADO":
+            break
+        kernel.tick()
+
+    assert procesos.estado_proceso(pid) == "TERMINADO"
+    assert procesos._procesos[pid]["espera_fallo_memoria"] is None
+    assert hilo["estado"] == "TERMINADO"
