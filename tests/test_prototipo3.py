@@ -359,7 +359,7 @@ def test_preservacion_aging_y_prioridades_mlfq_tras_despertar(entorno_prototipo3
     for i in range(25):
         procesos.crear_proceso(f"p_alta_{i}", "admin", [("CPU", 2)], prioridad=0)
 
-    # Avanzar 50 ticks para forzar el umbral de aging (promoción de prioridad 2 a prioridad 1)
+    # Avanzar 50 ticks: pasa una vez el umbral de aging de 30 ticks (promoción de prioridad 2 a prioridad 1)
     for _ in range(50):
         kernel.tick()
 
