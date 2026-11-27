@@ -99,10 +99,21 @@ def _modo_valido(modo: str) -> bool:
 
 
 def _partes(ruta: str) -> list:
-    """Separa una ruta absoluta en nombres: "/a/b" -> ["a", "b"] y "/" -> []."""
-    if not ruta.startswith("/"):
-        raise ErrorSistema(f"La ruta debe empezar por '/': {ruta!r}")
-    return [nombre for nombre in ruta.split("/") if nombre]
+    """Separa una ruta absoluta en los nombres que hay que recorrer desde la raíz.
+
+    Resuelve "." y ".." como en Unix: "/a/b" -> ["a", "b"], "/" -> [],
+    "/a/./b" -> ["a", "b"] y "/a/../b" -> ["b"]. En la raíz, ".." se queda en la raíz.
+    """
+    if not isinstance(ruta, str) or not ruta.startswith("/"):
+        raise ErrorSistema(f"La ruta debe ser texto y empezar por '/': {ruta!r}")
+    nombres = []
+    for nombre in ruta.split("/"):
+        if nombre == "..":
+            if nombres:
+                nombres.pop()
+        elif nombre not in ("", "."):
+            nombres.append(nombre)
+    return nombres
 
 
 def _buscar(nombres: list, ruta: str, usuario: str | None,
@@ -218,7 +229,9 @@ def formatear_disco() -> None:
 
 
 def crear_usuario(nombre: str, grupo: str = "usuarios") -> None:
-    """Crea un usuario en el sistema de archivos."""
+    """Crea un usuario en el sistema de archivos. Nombre y grupo deben ser texto no vacío."""
+    if not isinstance(nombre, str) or not nombre or not isinstance(grupo, str) or not grupo:
+        raise ErrorSistema(f"Usuario inválido: nombre {nombre!r}, grupo {grupo!r}")
     if nombre in _usuarios:
         raise ErrorYaExiste(f"Ya existe el usuario {nombre!r}")
     _usuarios[nombre] = grupo
@@ -249,6 +262,8 @@ def fs_escribir(
     espacio en el disco, lanza ErrorSistema sin cambiar nada.
     """
     _verificar_usuario(usuario)
+    if not isinstance(contenido, str):
+        raise ErrorSistema(f"El contenido debe ser texto, no {type(contenido).__name__}")
     padre, nombre = _buscar_padre(ruta, usuario)
     existe = nombre in padre["hijos"]
     if existe:

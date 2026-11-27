@@ -168,21 +168,13 @@ def _cmd_pwd(args: list[str], usuario: str) -> str:
 
 
 def _cmd_cd(args: list[str], usuario: str) -> str:
-    """Cambia el directorio actual del usuario."""
+    """Cambia el directorio actual del usuario, solo si la ruta existe y es un directorio."""
     destino = args[0] if args else "/"
     nueva_ruta = _resolver_ruta(destino, usuario)
 
-    # Si la ruta existe en archivos, verificar que sea directorio y permisos de paso
-    try:
-        info = archivos.fs_info(nueva_ruta)
-        if info["tipo"] != "directorio":
-            return f"Error: no es un directorio: {nueva_ruta}"
-        archivos.fs_listar(nueva_ruta, usuario)
-    except ErrorPermiso as e:
-        return f"Error: {e}"
-    except (ErrorNoExiste, ErrorSistema):
-        # Permitir navegación si no está restringida explícitamente
-        pass
+    # fs_listar lanza error si la ruta no existe, no es un directorio o el usuario
+    # no puede entrar; ejecutar_comando lo convierte en texto "Error: ..."
+    archivos.fs_listar(nueva_ruta, usuario)
 
     _directorios[usuario] = nueva_ruta
     return ""
@@ -613,9 +605,16 @@ def ejecutar_comando(linea: str, usuario: str = "admin") -> str:
     if not linea_limpia:
         return ""
 
-    # Registrar en el historial del usuario
-    _historiales.setdefault(usuario, []).append(linea_limpia)
+    try:
+        return _ejecutar_linea(linea_limpia, usuario)
+    finally:
+        # Se anota al terminar el comando: así un "load", que reinicia todo el
+        # sistema (también la consola), queda como primera línea del historial nuevo
+        _historiales.setdefault(usuario, []).append(linea_limpia)
 
+
+def _ejecutar_linea(linea_limpia: str, usuario: str) -> str:
+    """Separa la línea en palabras, busca el comando y lo ejecuta. Los errores vuelven como texto."""
     try:
         partes = shlex.split(linea_limpia.replace("\\", "/"))
     except ValueError as e:

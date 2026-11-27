@@ -173,6 +173,9 @@ def test_consola_pwd_y_cd():
     assert consola.directorio_actual("admin") == "/"
     assert consola.ejecutar_comando("pwd", usuario="admin") == "/"
 
+    # cd solo entra a directorios que existen
+    consola.ejecutar_comando("mkdir /var", usuario="admin")
+    consola.ejecutar_comando("mkdir /var/log", usuario="admin")
     consola.ejecutar_comando("cd /var/log", usuario="admin")
     assert consola.directorio_actual("admin") == "/var/log"
     assert consola.ejecutar_comando("pwd", usuario="admin") == "/var/log"

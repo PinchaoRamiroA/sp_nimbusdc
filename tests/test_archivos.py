@@ -130,6 +130,46 @@ def test_un_archivo_no_se_puede_listar_ni_atravesar():
         archivos.fs_info("/nota.txt/datos/otro")
 
 
+# ------------------------------------------------- rutas y entradas inválidas
+def test_las_rutas_resuelven_punto_y_punto_punto():
+    archivos.fs_mkdir("/datos", "admin")
+    archivos.fs_mkdir("/datos/./web", "admin")                      # "." no cambia nada
+    archivos.fs_escribir("/datos/web/../nota.txt", "hola", "admin")  # ".." sube a /datos
+    assert archivos.fs_listar("/datos", "admin") == ["nota.txt", "web"]
+    assert archivos.fs_leer("/datos/./web/../nota.txt", "admin") == "hola"
+
+
+def test_punto_punto_en_la_raiz_se_queda_en_la_raiz():
+    archivos.fs_mkdir("/datos", "admin")
+    assert archivos.fs_listar("/..", "admin") == ["datos"]
+    assert archivos.fs_listar("/../../datos/..", "admin") == ["datos"]
+    with pytest.raises(ErrorYaExiste):
+        archivos.fs_mkdir("/..", "admin")               # es la raíz, que ya existe
+    assert archivos.fs_listar("/", "admin") == ["datos"]    # no se creó una carpeta ".."
+
+
+@pytest.mark.parametrize("ruta", [None, 123, ["/datos"]])
+def test_ruta_que_no_es_texto_lanza_error_sistema(ruta):
+    with pytest.raises(ErrorSistema):
+        archivos.fs_listar(ruta, "admin")
+    with pytest.raises(ErrorSistema):
+        archivos.fs_info(ruta)
+
+
+@pytest.mark.parametrize("contenido", [None, 123, b"bytes"])
+def test_contenido_que_no_es_texto_lanza_error_y_no_crea_nada(contenido):
+    with pytest.raises(ErrorSistema):
+        archivos.fs_escribir("/nota.txt", contenido, "admin")
+    assert archivos.fs_listar("/", "admin") == []
+    assert archivos.fs_estado_disco()["bloques_libres"] == 200
+
+
+@pytest.mark.parametrize("nombre, grupo", [("", "usuarios"), (None, "usuarios"), (5, "usuarios"), ("auditor", "")])
+def test_usuario_con_nombre_o_grupo_invalido_lanza_error(nombre, grupo):
+    with pytest.raises(ErrorSistema):
+        archivos.crear_usuario(nombre, grupo)
+
+
 # ------------------------------------------------------- escribir y leer
 def test_escribir_crea_el_archivo_y_leer_lo_devuelve():
     assert archivos.fs_escribir("/nota.txt", "hola mundo", "cliente_a") == 10

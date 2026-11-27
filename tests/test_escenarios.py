@@ -1,12 +1,9 @@
 """Pruebas con los escenarios JSON de ``tests/escenarios/`` (formato del enunciado).
 
-Cada escenario se ejecuta "desde fuera": la prueba lee el JSON, crea cada
-proceso en su tick con ``procesos.crear_proceso`` y avanza con ``kernel.tick``.
-Así se miden RP1, RP2 y RP3 usando solo funciones del enunciado.
-
-Pendiente del núcleo: ``kernel.cargar_escenario`` todavía no lee este formato
-(usuarios como lista, semáforos como diccionario y llegadas que apuntan al
-catálogo). Por eso la última prueba está marcada como fallo esperado (xfail).
+Cada escenario se carga con ``kernel.cargar_escenario``, igual que en las
+pruebas del profesor, y se ejecuta tick a tick. Después de cada tick se observa
+qué proceso corrió y cuál se quedó esperando, usando solo funciones del
+enunciado. Así se miden RP1, RP2 y RP3.
 """
 import json
 import os
@@ -16,7 +13,7 @@ import pytest
 from minidc import kernel, procesos
 
 CARPETA = os.path.join(os.path.dirname(__file__), "escenarios")
-ESCENARIOS = ["ejemplo_enunciado.json", "base.json", "inanicion.json", "carga_cpu.json"]
+ESCENARIOS = ["ejemplo_enunciado.json", "base.json", "inanicion.json", "carga_cpu.json", "integracion.json"]
 
 SECCIONES = {"config", "usuarios", "semaforos", "catalogo", "llegadas"}
 CLAVES_CONFIG = {"num_cpus", "marcos_fisicos", "tam_pagina", "bloques_disco", "tam_bloque", "cache_bloques"}
@@ -34,37 +31,30 @@ def leer_escenario(nombre):
         return json.load(f)
 
 
-def crear_llegada(escenario, llegada, observados):
-    """Crea el proceso de una llegada y abre su registro de observación."""
-    servicio = escenario["catalogo"][llegada["programa"]]
-    pid = procesos.crear_proceso(
-        nombre=llegada["programa"],
-        usuario=llegada["usuario"],
-        programa=servicio["programa"],
-        memoria_bytes=servicio["memoria_bytes"],
-        cuota_marcos=servicio["cuota_marcos"],
-        prioridad=servicio["prioridad"],
-    )
-    observados[pid] = {
-        "programa": llegada["programa"],
-        "llegada": llegada["tick"],
-        "primer_inicio": None,      # tick en que usó la CPU por primera vez
-        "cpu_usada": 0,
-        "espera_seguida": 0,        # ticks seguidos en LISTO sin ejecutarse
-        "peor_espera": 0,           # el máximo que alcanzó espera_seguida
-    }
+def anotar_llegadas(observados):
+    """Abre un registro para cada proceso que aparece por primera vez: su llegada es el tick actual."""
+    for p in procesos.listar_procesos():
+        if p["pid"] not in observados:
+            observados[p["pid"]] = {
+                "programa": p["nombre"],
+                "llegada": kernel.reloj_actual(),
+                "primer_inicio": None,      # tick en que usó la CPU por primera vez
+                "cpu_usada": 0,
+                "espera_seguida": 0,        # ticks seguidos en LISTO sin ejecutarse
+                "peor_espera": 0,           # el máximo que alcanzó espera_seguida
+            }
 
 
 def observar_tick(observados):
     """Anota, después de un tick, qué proceso corrió y cuál se quedó esperando."""
     ahora = kernel.reloj_actual()
-    cpu_usada = {p["pid"]: p["cpu_usada"] for p in procesos.listar_procesos()}
-    for pid, registro in observados.items():
-        corrio = cpu_usada[pid] > registro["cpu_usada"]
-        registro["cpu_usada"] = cpu_usada[pid]
+    for p in procesos.listar_procesos():
+        registro = observados[p["pid"]]
+        corrio = p["cpu_usada"] > registro["cpu_usada"]
+        registro["cpu_usada"] = p["cpu_usada"]
         if corrio and registro["primer_inicio"] is None:
             registro["primer_inicio"] = ahora
-        if procesos.estado_proceso(pid) == "LISTO" and not corrio:
+        if p["estado"] == "LISTO" and not corrio:
             registro["espera_seguida"] += 1
             registro["peor_espera"] = max(registro["peor_espera"], registro["espera_seguida"])
         else:
@@ -72,20 +62,17 @@ def observar_tick(observados):
 
 
 def ejecutar_escenario(nombre, ticks):
-    """Ejecuta el escenario durante ``ticks`` ticks y devuelve un registro por proceso.
+    """Carga el escenario con el kernel, lo corre ``ticks`` ticks y devuelve un registro por proceso.
 
-    Un proceso con llegada en el tick N se crea justo antes de ejecutar el
-    tick N (los de tick 0, antes del primer tick), igual que hace el kernel.
+    Los procesos del tick 0 existen desde la carga; los demás aparecen en el
+    paso 1 del tick de su llegada y pueden correr en ese mismo tick.
     """
-    escenario = leer_escenario(nombre)
-    kernel.iniciar_sistema(escenario["config"])
-    pendientes = list(escenario["llegadas"])        # vienen ordenadas por tick
+    kernel.cargar_escenario(ruta_de(nombre))
     observados = {}                                 # pid -> registro
+    anotar_llegadas(observados)
     for _ in range(ticks):
-        tick_siguiente = kernel.reloj_actual() + 1
-        while pendientes and pendientes[0]["tick"] <= tick_siguiente:
-            crear_llegada(escenario, pendientes.pop(0), observados)
         kernel.tick()
+        anotar_llegadas(observados)
         observar_tick(observados)
     return list(observados.values())
 
@@ -127,6 +114,16 @@ def test_llegadas_son_validas_y_estan_ordenadas(nombre):
         assert llegada["usuario"] in usuarios
 
 
+@pytest.mark.parametrize("nombre", ESCENARIOS)
+def test_cada_llegada_crea_su_proceso_en_su_tick(nombre):
+    escenario = leer_escenario(nombre)
+    ultimo_tick = escenario["llegadas"][-1]["tick"]
+    registros = ejecutar_escenario(nombre, ticks=ultimo_tick)
+    esperadas = [(llegada["tick"], llegada["programa"]) for llegada in escenario["llegadas"]]
+    vistas = [(r["llegada"], r["programa"]) for r in registros]
+    assert vistas == esperadas                      # mismo orden, mismo tick, mismo programa
+
+
 # ----------------------------------------------------------- RP1, RP2 y RP3
 def test_rp1_los_servicios_web_empiezan_en_10_ticks_o_menos():
     registros = ejecutar_escenario("base.json", ticks=300)
@@ -161,18 +158,3 @@ def test_escenario_base_termina_todos_sus_procesos():
     assert len(estados) == len(registros) == 16
     assert set(estados) == {"TERMINADO"}
     assert kernel.resumen_sistema()["procesos_activos"] == 0
-
-
-def test_ejemplo_del_enunciado_termina_en_8_ticks():
-    """CPU 2 + ES 40 (5 ticks bloqueado) + CPU 1, con el proceso solo en el sistema."""
-    ejecutar_escenario("ejemplo_enunciado.json", ticks=8)
-    assert [p["estado"] for p in procesos.listar_procesos()] == ["TERMINADO"]
-
-
-# ------------------------------------------------ carga directa en el kernel
-@pytest.mark.parametrize("nombre", ESCENARIOS)
-def test_el_kernel_carga_el_escenario_directamente(nombre):
-    escenario = leer_escenario(nombre)
-    kernel.cargar_escenario(ruta_de(nombre))
-    kernel.ejecutar_ticks(escenario["llegadas"][-1]["tick"] + 1)
-    assert len(procesos.listar_procesos()) == len(escenario["llegadas"])

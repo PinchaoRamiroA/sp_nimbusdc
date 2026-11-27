@@ -1,0 +1,31 @@
+{
+  "config": {"num_cpus": 2, "marcos_fisicos": 16, "tam_pagina": 256,
+             "bloques_disco": 200, "tam_bloque": 512, "cache_bloques": 8},
+  "usuarios": ["cliente_a", "cliente_b"],
+  "semaforos": {"bd": 1},
+  "catalogo": {
+    "web": {"memoria_bytes": 1024, "cuota_marcos": 2, "prioridad": 0,
+            "programa": [["CPU", 2], ["ES", 40], ["MEM", 300], ["CPU", 1]]},
+    "analitica": {"memoria_bytes": 4096, "cuota_marcos": 4, "prioridad": 2,
+                  "programa": [["CPU", 20], ["MEM", 100], ["MEM", 2000], ["CPU", 20], ["MEM", 3900], ["CPU", 10]]},
+    "respaldo": {"memoria_bytes": 2048, "cuota_marcos": 2, "prioridad": 1,
+                 "programa": [["CPU", 1], ["ES", 150], ["ES", 10], ["ES", 190], ["CPU", 1]]},
+    "bd": {"memoria_bytes": 1024, "cuota_marcos": 2, "prioridad": 1,
+           "programa": [["CPU", 1], ["WAIT", "bd"], ["MEM", 512], ["CPU", 3], ["SIGNAL", "bd"], ["CPU", 1]]}
+  },
+  "llegadas": [
+    {"tick": 0, "programa": "analitica", "usuario": "cliente_b"},
+    {"tick": 0, "programa": "web", "usuario": "cliente_a"},
+    {"tick": 1, "programa": "bd", "usuario": "cliente_a"},
+    {"tick": 2, "programa": "bd", "usuario": "cliente_b"},
+    {"tick": 3, "programa": "respaldo", "usuario": "admin"},
+    {"tick": 5, "programa": "web", "usuario": "cliente_b"},
+    {"tick": 8, "programa": "bd", "usuario": "cliente_a"},
+    {"tick": 10, "programa": "web", "usuario": "cliente_a"},
+    {"tick": 15, "programa": "analitica", "usuario": "cliente_a"},
+    {"tick": 20, "programa": "bd", "usuario": "cliente_b"},
+    {"tick": 25, "programa": "web", "usuario": "cliente_b"},
+    {"tick": 30, "programa": "respaldo", "usuario": "admin"},
+    {"tick": 40, "programa": "web", "usuario": "cliente_a"}
+  ]
+}

@@ -285,7 +285,7 @@ def test_rp1_tiempo_respuesta_promedio_web_menor_o_igual_a_10():
 
 def test_rp2_anti_inanicion_envejecimiento():
     """Valida RP2: Ningún proceso supera 150 ticks consecutivos en LISTO.
-    Con carga continua de alta prioridad, el mecanismo de aging (promoción a los 50 ticks)
+    Con carga continua de alta prioridad, el mecanismo de aging (promoción a los 30 ticks)
     evita que un proceso de prioridad baja muera de inanición.
     """
     # Proceso de baja prioridad (prioridad 2)

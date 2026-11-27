@@ -1,8 +1,9 @@
 """Gestión de procesos, hilos y planificación de CPU.
 
 Implementa un planificador de colas multinivel con retroalimentación (MLFQ)
-con 3 niveles de prioridad (0: alta, 1: media, 2: baja) y envejecimiento (aging)
-para evitar inanición y satisfacer RP1 y RP2.
+con 3 niveles de prioridad (0: alta, 1: media, 2: baja), turno rotativo con un
+quantum de 2 ticks dentro de cada cola y envejecimiento (aging) para evitar
+inanición y satisfacer RP1 y RP2.
 Soporta gestión y despacho de hilos simulados, instrucción MEM y fallos de página
 deterministas de 5 ticks, y manejo robusto de protección de memoria (RM3).
 Este módulo no debe importar a `kernel.py`.
@@ -23,6 +24,9 @@ _contador_pids = itertools.count(1)
 _cambios_contexto = 0
 _pids_ejecutados_tick = set()
 _espera_semaforos = {}
+
+_QUANTUM = 2                    # ticks seguidos de CPU antes de ceder el turno a otro de la misma cola
+_UMBRAL_ENVEJECIMIENTO = 30     # ticks esperando en LISTO para subir un nivel de prioridad
 
 
 def reiniciar(config: dict | None = None) -> None:
@@ -79,6 +83,7 @@ def crear_proceso(
         "cpu_usada": 0,
         "tiempo_espera": 0,
         "espera_consecutiva": 0,
+        "ticks_turno": 0,
         "tiempo_bloqueado": 0,
         "espera_fallo_memoria": None,
         "semaforos_adquiridos": [],
@@ -393,13 +398,18 @@ def planificar_y_ejecutar_cpu(reloj: int) -> None:
     for cpu in range(_num_cpus):
         pid_actual = _en_ejecucion.get(cpu)
 
-        # Preempción: si hay un proceso en espera con prioridad estrictamente más alta
+        # Preempción: si hay un proceso en espera con prioridad estrictamente más alta,
+        # o si el proceso ya gastó su quantum y hay otro esperando en su misma cola
         if pid_actual is not None:
             p_actual = _procesos[pid_actual]
             hay_mayor_prioridad = any(len(_colas[prio]) > 0 for prio in range(p_actual["prioridad"]))
-            if hay_mayor_prioridad:
+            agoto_quantum = p_actual["ticks_turno"] >= _QUANTUM and len(_colas[p_actual["prioridad"]]) > 0
+            if hay_mayor_prioridad or agoto_quantum:
                 p_actual["estado"] = "LISTO"
-                _colas[p_actual["prioridad"]].appendleft(pid_actual)
+                if hay_mayor_prioridad:
+                    _colas[p_actual["prioridad"]].appendleft(pid_actual)   # sigue primero en su cola
+                else:
+                    _colas[p_actual["prioridad"]].append(pid_actual)       # turno rotativo: al final
                 _en_ejecucion[cpu] = None
                 _cambios_contexto += 1
                 pid_actual = None
@@ -413,6 +423,7 @@ def planificar_y_ejecutar_cpu(reloj: int) -> None:
                     p = _procesos[pid_actual]
                     p["estado"] = "EJECUTANDO"
                     p["espera_consecutiva"] = 0
+                    p["ticks_turno"] = 0
                     if p["primer_inicio"] is None:
                         p["primer_inicio"] = reloj
                     break
@@ -422,6 +433,7 @@ def planificar_y_ejecutar_cpu(reloj: int) -> None:
 
         p = _procesos[pid_actual]
         _pids_ejecutados_tick.add(pid_actual)
+        p["ticks_turno"] += 1
 
         # ---------------------------------------------------- Caso A: Proceso con hilos
         hilos = p.get("hilos", [])
@@ -471,7 +483,7 @@ def planificar_y_ejecutar_cpu(reloj: int) -> None:
                 hilo["cpu_usada"] = hilo.get("cpu_usada", 0) + 1
                 p["cpu_usada"] += 1
 
-                if hilo["restante_instruccion"] == 0:
+                if hilo["restante_instruccion"] <= 0:     # con <=, un ("CPU", 0) dura 1 tick y no se queda pegado
                     hilo["restante_instruccion"] = None
                     hilo["pc"] += 1
                     if hilo["pc"] >= len(hilo["programa"]):
@@ -565,7 +577,13 @@ def planificar_y_ejecutar_cpu(reloj: int) -> None:
             elif tipo == "ES":
                 bloque = int(valor)
                 operacion = str(inst[2]) if len(inst) > 2 else "L"
-                disco.encolar_solicitud_disco(pid_actual, bloque, operacion)
+                try:
+                    disco.encolar_solicitud_disco(pid_actual, bloque, operacion)
+                except ErrorSistema:
+                    # Bloque u operación inválidos: termina solo al proceso culpable, como en RM3
+                    terminar_proceso(pid_actual)
+                    _en_ejecucion[cpu] = None
+                    continue
                 hilo["pc"] += 1
                 hilo["estado"] = "BLOQUEADO"
                 if not any(th["estado"] == "LISTO" for th in p["hilos"]):
@@ -751,7 +769,7 @@ def planificar_y_ejecutar_cpu(reloj: int) -> None:
                 p["restante_instruccion"] -= 1
                 p["cpu_usada"] += 1
 
-                if p["restante_instruccion"] == 0:
+                if p["restante_instruccion"] <= 0:     # con <=, un ("CPU", 0) dura 1 tick y no se queda pegado
                     p["restante_instruccion"] = None
                     p["pc"] += 1
                     if p["pc"] >= len(p["programa"]):
@@ -809,7 +827,13 @@ def planificar_y_ejecutar_cpu(reloj: int) -> None:
             elif tipo == "ES":
                 bloque = int(valor)
                 operacion = str(inst[2]) if len(inst) > 2 else "L"
-                disco.encolar_solicitud_disco(pid_actual, bloque, operacion)
+                try:
+                    disco.encolar_solicitud_disco(pid_actual, bloque, operacion)
+                except ErrorSistema:
+                    # Bloque u operación inválidos: termina solo al proceso culpable, como en RM3
+                    terminar_proceso(pid_actual)
+                    _en_ejecucion[cpu] = None
+                    continue
                 p["estado"] = "BLOQUEADO"
                 p["pc"] += 1
                 if p["prioridad"] < p["prioridad_original"]:
@@ -920,8 +944,8 @@ def actualizar_metricas_espera() -> None:
             if pid not in _pids_ejecutados_tick:
                 p["tiempo_espera"] += 1
                 p["espera_consecutiva"] += 1
-                # Envejecimiento: umbral de 50 ticks
-                if p["espera_consecutiva"] >= 50 and p["prioridad"] > 0:
+                # Envejecimiento: tras _UMBRAL_ENVEJECIMIENTO ticks esperando sube un nivel
+                if p["espera_consecutiva"] >= _UMBRAL_ENVEJECIMIENTO and p["prioridad"] > 0:
                     old_prio = p["prioridad"]
                     new_prio = old_prio - 1
                     try:
