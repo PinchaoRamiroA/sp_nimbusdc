@@ -323,11 +323,17 @@ def liberar_memoria(pid: int) -> int:
     """Libera los marcos asignados al proceso ``pid`` y devuelve la cantidad liberada.
 
     Si el proceso no tenía memoria registrada devuelve 0 (no es un error).
+    Si el control de carga lo tenía suspendido y sigue vivo, lo reanuda: sin
+    memoria registrada ya nadie más lo haría.
     """
     reg = _procesos.pop(pid, None)
-    if pid in _suspendidos:
+    estaba_suspendido = pid in _suspendidos
+    if estaba_suspendido:
         _suspendidos.remove(pid)
     _ticks_suspendido.pop(pid, None)
+    if estaba_suspendido and _vivo(pid):
+        from minidc import procesos      # import diferido: evita dependencias circulares
+        procesos.reanudar_proceso(pid)
     if reg is None:
         return 0
     for pagina in reg["residentes"]:
@@ -531,10 +537,13 @@ def _reanudar_si_caben(procesos) -> list:
         demanda = _demanda(pid)
         envejecido = _ticks_suspendido.get(pid, 0) >= _MAX_TICKS_SUSPENDIDO
         if demanda <= disponibles or (not activos and not reanudados) or envejecido:
-            procesos.reanudar_proceso(pid)
-            _suspendidos.remove(pid)
+            if pid in _suspendidos:
+                _suspendidos.remove(pid)
             _ticks_suspendido.pop(pid, None)
-            reg = _procesos[pid]
+            procesos.reanudar_proceso(pid)   # si ya no le quedaba nada por ejecutar, termina
+            reg = _procesos.get(pid)
+            if reg is None:                  # terminó al reanudarlo y liberó su memoria
+                continue
             if _REACCION != "SUSPENDER":
                 reg["limite"] = max(1, min(demanda, libres))
             disponibles -= demanda

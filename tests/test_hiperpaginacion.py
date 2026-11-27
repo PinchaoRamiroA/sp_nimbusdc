@@ -284,3 +284,37 @@ def test_rm2_sin_hiperpaginacion_el_escenario_de_memoria_no_cambia():
         assert memoria.estado_control_carga()["suspendidos"] == []
     assert memoria.estado_control_carga()["reacciones"] == 0
     assert round(memoria.metricas_memoria()["tasa_fallos"], 3) == 0.165
+
+
+# ------------------------------------- regresiones de la revisión independiente
+def test_liberar_memoria_de_un_suspendido_vivo_lo_reanuda():
+    """liberar_memoria (función del enunciado) sobre un suspendido lo dejaba BLOQUEADO para siempre."""
+    for i in range(6):
+        procesos.crear_proceso(f"analitica_{i}", "admin", ciclo(8, 30), memoria_bytes=8 * PAGINA, cuota_marcos=2)
+    correr_hasta_detectar()
+    victima = memoria.estado_control_carga()["suspendidos"][0]
+    memoria.liberar_memoria(victima)
+    assert victima not in memoria.estado_control_carga()["suspendidos"]
+    assert procesos._procesos[victima]["suspendido"] is False
+    while not todos_terminados():
+        kernel.tick()
+        assert kernel.reloj_actual() < 10_000, "un proceso quedó bloqueado para siempre"
+
+
+def test_reanudar_a_un_suspendido_sin_instrucciones_no_rompe_el_tick():
+    """Al reanudarlo termina y libera su memoria; antes tick() lanzaba ValueError."""
+    kernel.iniciar_sistema(dict(CONFIG, marcos_fisicos=4))
+    alto = procesos.crear_proceso("alto", "admin", [("CPU", 50)], memoria_bytes=4 * PAGINA,
+                                  cuota_marcos=4, prioridad=0)
+    vacio = procesos.crear_proceso("vacio", "admin", [], memoria_bytes=8 * PAGINA, cuota_marcos=1, prioridad=2)
+    for pagina in range(4):
+        memoria.acceder_memoria(alto, pagina * PAGINA)
+    for _ in range(32):
+        for pagina in range(8):
+            memoria.acceder_memoria(vacio, pagina * PAGINA)
+    assert memoria.detectar_hiperpaginacion()
+    while not todos_terminados():
+        kernel.tick()                                # no debe lanzar excepciones
+        assert kernel.reloj_actual() < 1000
+    assert memoria.estado_control_carga()["suspendidos"] == []
+    assert memoria.estado_memoria()["marcos_libres"] == 4
