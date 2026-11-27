@@ -2,7 +2,7 @@
 import json
 import os
 
-from minidc import archivos, disco, procesos
+from minidc import archivos, disco, memoria, procesos
 from minidc.errores import ErrorNoExiste, ErrorSistema
 
 # ---------------------------------------------------------------- estado interno
@@ -106,6 +106,8 @@ def tick() -> None:
 
     # 4. Actualización de métricas y envejecimiento
     procesos.actualizar_metricas_espera()
+    # Con las métricas del tick, la memoria revisa la hiperpaginación y reacciona (RM2)
+    memoria.controlar_hiperpaginacion()
 
 
 def ejecutar_ticks(n: int) -> None:

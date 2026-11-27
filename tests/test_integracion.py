@@ -463,7 +463,6 @@ def test_rs2_resolver_deja_el_sistema_sin_interbloqueos(con_sincronizacion):
     assert todos_terminados()
 
 
-@pytest.mark.xfail(reason="Pendiente (Integrante 2): la reacción a la hiperpaginación de RM2")
 def test_rm2_la_tasa_de_fallos_baja_despues_de_detectar_hiperpaginacion():
     """6 procesos recorren 8 páginas en ciclo con cuota de 2 marcos: hiperpaginación segura."""
     recorrido = [("MEM", pagina * 256) for pagina in range(8)] * 30

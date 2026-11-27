@@ -3,8 +3,8 @@
 - tests/escenarios/memoria.json: lo genera informe/experimentos/experimento_memoria.py
 - tests/escenarios/disco.json:   lo genera informe/experimentos/experimento_disco.py
 
-Usa las funciones del enunciado. La prueba de RM1 con el kernel completo se
-omite (skip) mientras procesos.py no ejecute la instrucción ("MEM", dir).
+Usa las funciones del enunciado. RM2 (hiperpaginación) está en
+tests/test_hiperpaginacion.py.
 """
 import json
 import os
@@ -76,8 +76,7 @@ def test_rm1_escenario_de_memoria_con_el_kernel():
     memoria.reiniciar(leer(ESC_MEMORIA)["config"])   # por si el kernel aún no la reinicia
     correr_hasta_terminar()
     m = memoria.metricas_memoria()
-    if m["accesos"] == 0:
-        pytest.skip("procesos.py todavía no ejecuta la instrucción ('MEM', dir)")
+    assert m["accesos"] > 0                          # procesos ejecuta ("MEM", dir)
     assert m["tasa_fallos"] <= 0.25
     # Todos terminaron: la memoria debe quedar libre
     assert memoria.estado_memoria()["marcos_libres"] == leer(ESC_MEMORIA)["config"]["marcos_fisicos"]

@@ -92,6 +92,7 @@ def crear_proceso(
         "hilos": [],
         "siguiente_tid": 1,
         "ultimo_tid_ejecutado": 0,
+        "suspendido": False,     # lo suspende el control de memoria ante la hiperpaginación (RM2)
     }
     _procesos[pid] = proceso
     _colas[prio_norm].append(pid)
@@ -305,6 +306,71 @@ def proceso_en_ejecucion(cpu: int = 0) -> int | None:
     return _en_ejecucion.get(cpu)
 
 
+def puede_suspenderse(pid: int) -> bool:
+    """Indica si el control de memoria puede suspender a ``pid`` (reacción a la hiperpaginación, RM2).
+
+    Solo se suspenden procesos sin hilos que no tengan semáforos ni mutex, que
+    no esperen un semáforo y que no esperen una E/S de disco (sus páginas
+    estarían en uso por la transferencia). Pueden estar LISTO, EJECUTANDO o
+    BLOQUEADO por un fallo de página.
+    """
+    p = _procesos.get(pid)
+    if p is None or p["estado"] == "TERMINADO" or p.get("suspendido"):
+        return False
+    if (p.get("hilos") or p.get("semaforos_adquiridos") or p.get("mutexes_adquiridos")
+            or p.get("espera_semaforo") is not None):
+        return False
+    if p["estado"] == "BLOQUEADO" and p.get("espera_fallo_memoria") is None:
+        return False
+    return True
+
+
+def suspender_proceso(pid: int) -> bool:
+    """Suspende a ``pid``: queda BLOQUEADO y no vuelve a LISTO hasta ``reanudar_proceso``.
+
+    Si estaba en la cola de listos sale de ella; si estaba en una CPU la libera
+    (cuenta un cambio de contexto); si esperaba un fallo de página, la espera
+    sigue corriendo. Devuelve False si no se puede suspender (``puede_suspenderse``).
+    """
+    global _cambios_contexto
+    if not puede_suspenderse(pid):
+        return False
+    p = _procesos[pid]
+    if p["estado"] == "LISTO":
+        for cola in _colas.values():
+            if pid in cola:
+                cola.remove(pid)
+    elif p["estado"] == "EJECUTANDO":
+        for cpu, actual in list(_en_ejecucion.items()):
+            if actual == pid:
+                _en_ejecucion[cpu] = None
+        _cambios_contexto += 1
+    p["estado"] = "BLOQUEADO"
+    p["suspendido"] = True
+    p["espera_consecutiva"] = 0
+    return True
+
+
+def reanudar_proceso(pid: int) -> bool:
+    """Quita la suspensión de ``pid``. Si ya no espera nada, vuelve a LISTO.
+
+    Devuelve False si el proceso no estaba suspendido.
+    """
+    p = _procesos.get(pid)
+    if p is None or not p.get("suspendido"):
+        return False
+    p["suspendido"] = False
+    if p["estado"] == "BLOQUEADO" and p.get("espera_fallo_memoria") is None:
+        if p["pc"] >= len(p["programa"]):
+            terminar_proceso(pid)
+        else:
+            p["estado"] = "LISTO"
+            p["espera_consecutiva"] = 0
+            if pid not in _colas[p["prioridad"]]:
+                _colas[p["prioridad"]].append(pid)
+    return True
+
+
 def despertar_proceso(pid: int) -> None:
     """Despierta a un proceso que completó su E/S y lo reincorpora a la cola de listos."""
     if pid not in _procesos:
@@ -333,6 +399,7 @@ def despertar_proceso(pid: int) -> None:
             p["estado"] == "BLOQUEADO"
             and p.get("espera_fallo_memoria") is None
             and p.get("espera_semaforo") is None
+            and not p.get("suspendido")
         ):
             if p["pc"] >= len(p["programa"]):
                 terminar_proceso(pid)
@@ -380,6 +447,8 @@ def avanzar_esperas_memoria() -> None:
                     p["espera_fallo_memoria"] = None
                     if p["pc"] >= len(p["programa"]):
                         terminar_proceso(pid)
+                    elif p.get("suspendido"):
+                        pass    # suspendido por el control de memoria: sigue BLOQUEADO hasta reanudar_proceso
                     else:
                         p["estado"] = "LISTO"
                         p["espera_consecutiva"] = 0
