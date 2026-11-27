@@ -89,6 +89,7 @@ def crear_proceso(
         "semaforos_adquiridos": [],
         "mutexes_adquiridos": set(),
         "espera_semaforo": None,
+        "espera_disco": False,
         "hilos": [],
         "siguiente_tid": 1,
         "ultimo_tid_ejecutado": 0,
@@ -97,6 +98,49 @@ def crear_proceso(
     _procesos[pid] = proceso
     _colas[prio_norm].append(pid)
     return pid
+
+
+def _principal_estado(p: dict) -> str:
+    """Devuelve el estado del flujo principal del proceso: LISTO, BLOQUEADO o TERMINADO."""
+    if p["estado"] == "TERMINADO":
+        return "TERMINADO"
+    if (
+        p.get("espera_fallo_memoria") is not None
+        or p.get("espera_semaforo") is not None
+        or p.get("espera_disco", False)
+    ):
+        return "BLOQUEADO"
+    if p["pc"] >= len(p["programa"]):
+        return "TERMINADO"
+    if p.get("suspendido", False):
+        return "BLOQUEADO"
+    return "LISTO"
+
+
+def _hay_unidad_lista(p: dict) -> bool:
+    """Indica si el proceso tiene al menos un hilo o flujo principal en LISTO."""
+    if _principal_estado(p) == "LISTO":
+        return True
+    return any(h["estado"] == "LISTO" for h in p.get("hilos", []))
+
+
+def _todos_terminados(p: dict) -> bool:
+    """Indica si tanto el flujo principal como todos los hilos de ``p`` terminaron."""
+    if _principal_estado(p) != "TERMINADO":
+        return False
+    return all(h["estado"] == "TERMINADO" for h in p.get("hilos", []))
+
+
+def _reincorporar_listo(pid: int, p: dict, resetear_prioridad: bool = True) -> None:
+    """Transiciona ``pid`` a LISTO y lo encola en MLFQ si aún no está presente."""
+    if p.get("suspendido"):
+        return
+    p["estado"] = "LISTO"
+    p["espera_consecutiva"] = 0
+    if resetear_prioridad and p["prioridad"] < p["prioridad_original"]:
+        p["prioridad"] = p["prioridad_original"]
+    if pid not in _colas[p["prioridad"]]:
+        _colas[p["prioridad"]].append(pid)
 
 
 def crear_hilo(pid: int, programa: list) -> int:
@@ -120,6 +164,8 @@ def crear_hilo(pid: int, programa: list) -> int:
         "espera_semaforo": None,
     }
     p.setdefault("hilos", []).append(hilo)
+    if p["estado"] == "BLOQUEADO" and not p.get("suspendido"):
+        _reincorporar_listo(pid, p)
     return tid
 
 
@@ -165,23 +211,24 @@ def _despertar_por_semaforo(
 
     # Caso 1: Proceso con hilos
     if p.get("hilos"):
-        desperto_hilo = False
-        for h in p["hilos"]:
-            if h["estado"] == "BLOQUEADO" and h.get("espera_semaforo") == nombre:
-                if candidato_tid is None or h["tid"] == candidato_tid:
-                    h["estado"] = "LISTO"
-                    h["espera_semaforo"] = None
-                    desperto_hilo = True
-                    break
+        desperto = False
+        if candidato_tid is None and p.get("espera_semaforo") == nombre:
+            p["espera_semaforo"] = None
+            desperto = True
+        else:
+            for h in p["hilos"]:
+                if h["estado"] == "BLOQUEADO" and h.get("espera_semaforo") == nombre:
+                    if candidato_tid is None or h["tid"] == candidato_tid:
+                        h["estado"] = "LISTO"
+                        h["espera_semaforo"] = None
+                        desperto = True
+                        break
 
-        if desperto_hilo:
-            if p["estado"] == "BLOQUEADO":
-                p["estado"] = "LISTO"
-                p["espera_consecutiva"] = 0
-                if p["prioridad"] < p["prioridad_original"]:
-                    p["prioridad"] = p["prioridad_original"]
-                if candidato_pid not in _colas[p["prioridad"]]:
-                    _colas[p["prioridad"]].append(candidato_pid)
+        if desperto:
+            if _todos_terminados(p):
+                terminar_proceso(candidato_pid)
+            elif p["estado"] == "BLOQUEADO" and _hay_unidad_lista(p):
+                _reincorporar_listo(candidato_pid, p)
             elif p["estado"] == "LISTO":
                 if candidato_pid not in _colas[p["prioridad"]]:
                     _colas[p["prioridad"]].append(candidato_pid)
@@ -189,13 +236,8 @@ def _despertar_por_semaforo(
     # Caso 2: Proceso sin hilos
     else:
         if p["estado"] == "BLOQUEADO" and p.get("espera_semaforo") == nombre:
-            p["estado"] = "LISTO"
             p["espera_semaforo"] = None
-            p["espera_consecutiva"] = 0
-            if p["prioridad"] < p["prioridad_original"]:
-                p["prioridad"] = p["prioridad_original"]
-            if candidato_pid not in _colas[p["prioridad"]]:
-                _colas[p["prioridad"]].append(candidato_pid)
+            _reincorporar_listo(candidato_pid, p)
 
     return candidato_pid
 
@@ -263,8 +305,11 @@ def terminar_proceso(pid: int) -> None:
         pass
 
     p["espera_semaforo"] = None
+    p["espera_fallo_memoria"] = None
+    p["espera_disco"] = False
     for h in p.get("hilos", []):
         h["espera_semaforo"] = None
+        h["espera_fallo_memoria"] = None
     for sem_nom, cola_esp in list(_espera_semaforos.items()):
         _espera_semaforos[sem_nom] = deque([item for item in cola_esp if item[0] != pid])
 
@@ -376,8 +421,16 @@ def despertar_proceso(pid: int) -> None:
     if pid not in _procesos:
         return
     p = _procesos[pid]
+    if p["estado"] == "TERMINADO":
+        return
+
+    desperto_algo = False
+    if p.get("espera_disco"):
+        p["espera_disco"] = False
+        if _principal_estado(p) in ("LISTO", "TERMINADO"):
+            desperto_algo = True
+
     if p.get("hilos"):
-        desperto_alguno = False
         for h in p["hilos"]:
             if (
                 h["estado"] == "BLOQUEADO"
@@ -388,12 +441,13 @@ def despertar_proceso(pid: int) -> None:
                     h["estado"] = "TERMINADO"
                 else:
                     h["estado"] = "LISTO"
-                    desperto_alguno = True
-        if p["estado"] == "BLOQUEADO" and desperto_alguno:
-            p["estado"] = "LISTO"
-            p["espera_consecutiva"] = 0
-            if pid not in _colas[p["prioridad"]]:
-                _colas[p["prioridad"]].append(pid)
+                desperto_algo = True
+
+        if desperto_algo:
+            if _todos_terminados(p):
+                terminar_proceso(pid)
+            elif p["estado"] == "BLOQUEADO" and not p.get("suspendido") and _hay_unidad_lista(p):
+                _reincorporar_listo(pid, p, resetear_prioridad=False)
     else:
         if (
             p["estado"] == "BLOQUEADO"
@@ -404,10 +458,7 @@ def despertar_proceso(pid: int) -> None:
             if p["pc"] >= len(p["programa"]):
                 terminar_proceso(pid)
             else:
-                p["estado"] = "LISTO"
-                p["espera_consecutiva"] = 0
-                if pid not in _colas[p["prioridad"]]:
-                    _colas[p["prioridad"]].append(pid)
+                _reincorporar_listo(pid, p, resetear_prioridad=False)
 
 
 def avanzar_esperas_memoria() -> None:
@@ -416,46 +467,226 @@ def avanzar_esperas_memoria() -> None:
         if p["estado"] == "TERMINADO":
             continue
 
-        # 1. Proceso con hilos
-        if p.get("hilos"):
-            desperto_hilo = False
-            for h in p["hilos"]:
-                if h["estado"] == "BLOQUEADO" and h.get("espera_fallo_memoria") is not None:
-                    h["espera_fallo_memoria"] -= 1
-                    if h["espera_fallo_memoria"] <= 0:
-                        h["espera_fallo_memoria"] = None
-                        if h["pc"] >= len(h["programa"]):
-                            h["estado"] = "TERMINADO"
-                        else:
-                            h["estado"] = "LISTO"
-                            desperto_hilo = True
+        evento_memoria = False
 
-            # Si el proceso estaba bloqueado y ahora tiene al menos un hilo listo
-            if p["estado"] == "BLOQUEADO" and desperto_hilo:
-                p["estado"] = "LISTO"
-                p["espera_consecutiva"] = 0
-                if p["prioridad"] < p["prioridad_original"]:
-                    p["prioridad"] = p["prioridad_original"]
-                if pid not in _colas[p["prioridad"]]:
-                    _colas[p["prioridad"]].append(pid)
+        # Decrementar contador a nivel de proceso (flujo principal), aunque tenga hilos
+        if p.get("espera_fallo_memoria") is not None:
+            p["espera_fallo_memoria"] -= 1
+            if p["espera_fallo_memoria"] <= 0:
+                p["espera_fallo_memoria"] = None
+                evento_memoria = True
 
-        # 2. Proceso sin hilos
-        else:
-            if p["estado"] == "BLOQUEADO" and p.get("espera_fallo_memoria") is not None:
-                p["espera_fallo_memoria"] -= 1
-                if p["espera_fallo_memoria"] <= 0:
-                    p["espera_fallo_memoria"] = None
-                    if p["pc"] >= len(p["programa"]):
-                        terminar_proceso(pid)
-                    elif p.get("suspendido"):
-                        pass    # suspendido por el control de memoria: sigue BLOQUEADO hasta reanudar_proceso
+        # Decrementar contadores a nivel de hilo
+        for h in p.get("hilos", []):
+            if h["estado"] == "BLOQUEADO" and h.get("espera_fallo_memoria") is not None:
+                h["espera_fallo_memoria"] -= 1
+                if h["espera_fallo_memoria"] <= 0:
+                    h["espera_fallo_memoria"] = None
+                    if h["pc"] >= len(h["programa"]):
+                        h["estado"] = "TERMINADO"
                     else:
-                        p["estado"] = "LISTO"
-                        p["espera_consecutiva"] = 0
-                        if p["prioridad"] < p["prioridad_original"]:
-                            p["prioridad"] = p["prioridad_original"]
-                        if pid not in _colas[p["prioridad"]]:
-                            _colas[p["prioridad"]].append(pid)
+                        h["estado"] = "LISTO"
+                    evento_memoria = True
+
+        if not evento_memoria:
+            continue
+
+        if _todos_terminados(p):
+            terminar_proceso(pid)
+        elif p["estado"] == "BLOQUEADO" and not p.get("suspendido") and _hay_unidad_lista(p):
+            _reincorporar_listo(pid, p)
+
+
+def _sumar_cpu(p: dict, hilo: dict | None) -> None:
+    """Contabiliza 1 tick de CPU usada en el proceso y, si aplica, en el hilo."""
+    if hilo is not None:
+        hilo["cpu_usada"] = hilo.get("cpu_usada", 0) + 1
+    p["cpu_usada"] += 1
+
+
+def _finalizar_turno_multihilo(p: dict, pid_actual: int, cpu: int) -> None:
+    """Actualiza el estado del proceso multihilo tras ceder CPU o terminar una unidad."""
+    if _todos_terminados(p):
+        terminar_proceso(pid_actual)
+    elif not _hay_unidad_lista(p):
+        p["estado"] = "BLOQUEADO"
+        if p["prioridad"] < p["prioridad_original"]:
+            p["prioridad"] = p["prioridad_original"]
+    else:
+        _reincorporar_listo(pid_actual, p)
+    _en_ejecucion[cpu] = None
+
+
+def _ejecutar_signal(pid_actual: int, p: dict, nombre: str) -> bool:
+    """Ejecuta SIGNAL sobre ``nombre``; devuelve False si el proceso terminó por error."""
+    if nombre in p.get("semaforos_adquiridos", []):
+        p["semaforos_adquiridos"].remove(nombre)
+
+    cola_antes = []
+    try:
+        from minidc import sincronizacion
+        est = sincronizacion.estado_semaforo(nombre)
+        if isinstance(est, dict):
+            cola_antes = list(est.get("cola_espera", []))
+    except Exception:
+        pass
+
+    ret_signal = None
+    try:
+        from minidc import sincronizacion
+        ret_signal = sincronizacion.semaforo_signal(nombre, pid_actual)
+    except NotImplementedError:
+        pass
+    except ErrorSistema:
+        terminar_proceso(pid_actual)
+        return False
+
+    pid_despertado = None
+    if isinstance(ret_signal, int):
+        pid_despertado = ret_signal
+    elif cola_antes:
+        cola_despues = []
+        try:
+            from minidc import sincronizacion
+            est = sincronizacion.estado_semaforo(nombre)
+            if isinstance(est, dict):
+                cola_despues = list(est.get("cola_espera", []))
+        except Exception:
+            pass
+        if len(cola_despues) < len(cola_antes):
+            pid_despertado = cola_antes[0]
+
+    _despertar_por_semaforo(nombre, pid_despertado=pid_despertado)
+    return True
+
+
+def _ejecutar_unidad_multihilo(p: dict, pid_actual: int, cpu: int, hilo: dict | None) -> None:
+    """Ejecuta 1 tick de CPU sobre un hilo (o sobre el flujo principal si ``hilo is None``)."""
+    es_hilo = hilo is not None
+    unidad = hilo if es_hilo else p
+    if es_hilo:
+        hilo["estado"] = "EJECUTANDO"
+
+    if unidad["pc"] >= len(unidad["programa"]):
+        if es_hilo:
+            hilo["estado"] = "TERMINADO"
+        _finalizar_turno_multihilo(p, pid_actual, cpu)
+        return
+
+    inst = unidad["programa"][unidad["pc"]]
+    tipo = inst[0]
+    valor = inst[1]
+
+    if tipo == "CPU":
+        if unidad["restante_instruccion"] is None:
+            unidad["restante_instruccion"] = int(valor)
+
+        unidad["restante_instruccion"] -= 1
+        _sumar_cpu(p, hilo)
+
+        if unidad["restante_instruccion"] <= 0:     # con <=, un ("CPU", 0) dura 1 tick y no se queda pegado
+            unidad["restante_instruccion"] = None
+            unidad["pc"] += 1
+            if es_hilo:
+                hilo["estado"] = "TERMINADO" if hilo["pc"] >= len(hilo["programa"]) else "LISTO"
+            _finalizar_turno_multihilo(p, pid_actual, cpu)
+        else:
+            # La instrucción aún tiene ráfaga pendiente: permanece ejecutando en la CPU
+            if es_hilo:
+                hilo["estado"] = "LISTO"
+            p["estado"] = "EJECUTANDO"
+
+    elif tipo == "MEM":
+        direccion = int(valor)
+        escritura = bool(inst[2]) if len(inst) > 2 else False
+
+        try:
+            from minidc import memoria
+            res = memoria.acceder_memoria(pid_actual, direccion, escritura)
+        except NotImplementedError:
+            if direccion < 0 or direccion >= p["memoria_bytes"]:
+                terminar_proceso(pid_actual)
+                _en_ejecucion[cpu] = None
+                return
+            res = {"marco": 0, "fallo_pagina": False, "pagina_reemplazada": None}
+        except ErrorMemoria:
+            # RM3: Acceso inválido termina limpiamente al proceso infractor
+            terminar_proceso(pid_actual)
+            _en_ejecucion[cpu] = None
+            return
+
+        _sumar_cpu(p, hilo)
+        unidad["pc"] += 1
+
+        if res.get("fallo_pagina", False):
+            if es_hilo:
+                hilo["estado"] = "BLOQUEADO"
+            unidad["espera_fallo_memoria"] = 5
+        else:
+            if es_hilo:
+                hilo["estado"] = "TERMINADO" if hilo["pc"] >= len(hilo["programa"]) else "LISTO"
+        _finalizar_turno_multihilo(p, pid_actual, cpu)
+
+    elif tipo == "ES":
+        bloque = int(valor)
+        operacion = str(inst[2]) if len(inst) > 2 else "L"
+        try:
+            disco.encolar_solicitud_disco(pid_actual, bloque, operacion)
+        except ErrorSistema:
+            # Bloque u operación inválidos: termina solo al proceso culpable, como en RM3
+            terminar_proceso(pid_actual)
+            _en_ejecucion[cpu] = None
+            return
+        unidad["pc"] += 1
+        if es_hilo:
+            hilo["estado"] = "BLOQUEADO"
+        else:
+            p["espera_disco"] = True
+        _finalizar_turno_multihilo(p, pid_actual, cpu)
+
+    elif tipo == "WAIT":
+        nombre = str(valor)
+        try:
+            from minidc import sincronizacion
+            adquirido = sincronizacion.semaforo_wait(nombre, pid_actual)
+        except NotImplementedError:
+            adquirido = True
+        except ErrorSistema:
+            terminar_proceso(pid_actual)
+            _en_ejecucion[cpu] = None
+            return
+
+        if adquirido:
+            p.setdefault("semaforos_adquiridos", []).append(nombre)
+            unidad["pc"] += 1
+            _sumar_cpu(p, hilo)
+            unidad["espera_semaforo"] = None
+            if es_hilo:
+                hilo["estado"] = "TERMINADO" if hilo["pc"] >= len(hilo["programa"]) else "LISTO"
+        else:
+            if es_hilo:
+                hilo["estado"] = "BLOQUEADO"
+            unidad["espera_semaforo"] = nombre
+            _espera_semaforos.setdefault(nombre, deque()).append((pid_actual, hilo["tid"] if es_hilo else None))
+        _finalizar_turno_multihilo(p, pid_actual, cpu)
+
+    elif tipo == "SIGNAL":
+        nombre = str(valor)
+        if not _ejecutar_signal(pid_actual, p, nombre):
+            _en_ejecucion[cpu] = None
+            return
+
+        unidad["pc"] += 1
+        _sumar_cpu(p, hilo)
+        if es_hilo:
+            hilo["estado"] = "TERMINADO" if hilo["pc"] >= len(hilo["programa"]) else "LISTO"
+        _finalizar_turno_multihilo(p, pid_actual, cpu)
+
+    else:
+        unidad["pc"] += 1
+        if es_hilo:
+            hilo["estado"] = "TERMINADO" if hilo["pc"] >= len(hilo["programa"]) else "LISTO"
+        _finalizar_turno_multihilo(p, pid_actual, cpu)
 
 
 def planificar_y_ejecutar_cpu(reloj: int) -> None:
@@ -506,319 +737,32 @@ def planificar_y_ejecutar_cpu(reloj: int) -> None:
 
         # ---------------------------------------------------- Caso A: Proceso con hilos
         hilos = p.get("hilos", [])
-        hilos_activos = [h for h in hilos if h["estado"] != "TERMINADO"]
-        if hilos_activos:
-            hilos_listos = [h for h in hilos_activos if h["estado"] in ("LISTO", "EJECUTANDO")]
-            if not hilos_listos:
-                # Todos los hilos están bloqueados
-                p["estado"] = "BLOQUEADO"
+        if hilos:
+            unidades_listos = []
+            if _principal_estado(p) == "LISTO":
+                unidades_listos.append((0, None))
+            for h in hilos:
+                if h["estado"] in ("LISTO", "EJECUTANDO"):
+                    unidades_listos.append((h["tid"], h))
+
+            if not unidades_listos:
+                if _todos_terminados(p):
+                    terminar_proceso(pid_actual)
+                else:
+                    p["estado"] = "BLOQUEADO"
+                    if p["prioridad"] < p["prioridad_original"]:
+                        p["prioridad"] = p["prioridad_original"]
                 _en_ejecucion[cpu] = None
                 continue
 
-            # Despacho Round-Robin entre los hilos listos
+            # Despacho Round-Robin entre los hilos listos (y flujo principal si sigue activo)
             ultimo_tid = p.get("ultimo_tid_ejecutado", 0)
-            candidatos = [h for h in hilos_listos if h["tid"] > ultimo_tid]
+            candidatos = [item for item in unidades_listos if item[0] > ultimo_tid]
             if not candidatos:
-                candidatos = hilos_listos
-            hilo = candidatos[0]
-            p["ultimo_tid_ejecutado"] = hilo["tid"]
-            hilo["estado"] = "EJECUTANDO"
-
-            if hilo["pc"] >= len(hilo["programa"]):
-                hilo["estado"] = "TERMINADO"
-                if all(th["estado"] == "TERMINADO" for th in p["hilos"]):
-                    terminar_proceso(pid_actual)
-                    _en_ejecucion[cpu] = None
-                elif not any(th["estado"] == "LISTO" for th in p["hilos"]):
-                    p["estado"] = "BLOQUEADO"
-                    if p["prioridad"] < p["prioridad_original"]:
-                        p["prioridad"] = p["prioridad_original"]
-                    _en_ejecucion[cpu] = None
-                else:
-                    p["estado"] = "LISTO"
-                    _colas[p["prioridad"]].append(pid_actual)
-                    _en_ejecucion[cpu] = None
-                continue
-
-            inst = hilo["programa"][hilo["pc"]]
-            tipo = inst[0]
-            valor = inst[1]
-
-            if tipo == "CPU":
-                if hilo["restante_instruccion"] is None:
-                    hilo["restante_instruccion"] = int(valor)
-
-                hilo["restante_instruccion"] -= 1
-                hilo["cpu_usada"] = hilo.get("cpu_usada", 0) + 1
-                p["cpu_usada"] += 1
-
-                if hilo["restante_instruccion"] <= 0:     # con <=, un ("CPU", 0) dura 1 tick y no se queda pegado
-                    hilo["restante_instruccion"] = None
-                    hilo["pc"] += 1
-                    if hilo["pc"] >= len(hilo["programa"]):
-                        hilo["estado"] = "TERMINADO"
-                        if all(th["estado"] == "TERMINADO" for th in p["hilos"]):
-                            terminar_proceso(pid_actual)
-                            _en_ejecucion[cpu] = None
-                        elif not any(th["estado"] == "LISTO" for th in p["hilos"]):
-                            p["estado"] = "BLOQUEADO"
-                            if p["prioridad"] < p["prioridad_original"]:
-                                p["prioridad"] = p["prioridad_original"]
-                            _en_ejecucion[cpu] = None
-                        else:
-                            p["estado"] = "LISTO"
-                            p["espera_consecutiva"] = 0
-                            if p["prioridad"] < p["prioridad_original"]:
-                                p["prioridad"] = p["prioridad_original"]
-                            _colas[p["prioridad"]].append(pid_actual)
-                            _en_ejecucion[cpu] = None
-                    else:
-                        hilo["estado"] = "LISTO"
-                        p["estado"] = "LISTO"
-                        p["espera_consecutiva"] = 0
-                        if p["prioridad"] < p["prioridad_original"]:
-                            p["prioridad"] = p["prioridad_original"]
-                        _colas[p["prioridad"]].append(pid_actual)
-                        _en_ejecucion[cpu] = None
-                else:
-                    # La instrucción aún tiene ráfaga pendiente: permanece ejecutando en la CPU
-                    hilo["estado"] = "LISTO"
-                    p["estado"] = "EJECUTANDO"
-
-            elif tipo == "MEM":
-                direccion = int(valor)
-                escritura = bool(inst[2]) if len(inst) > 2 else False
-
-                try:
-                    from minidc import memoria
-                    res = memoria.acceder_memoria(pid_actual, direccion, escritura)
-                except NotImplementedError:
-                    if direccion < 0 or direccion >= p["memoria_bytes"]:
-                        terminar_proceso(pid_actual)
-                        _en_ejecucion[cpu] = None
-                        continue
-                    res = {"marco": 0, "fallo_pagina": False, "pagina_reemplazada": None}
-                except ErrorMemoria:
-                    # RM3: Acceso inválido termina cleanly al proceso infractor
-                    terminar_proceso(pid_actual)
-                    _en_ejecucion[cpu] = None
-                    continue
-
-                hilo["cpu_usada"] = hilo.get("cpu_usada", 0) + 1
-                p["cpu_usada"] += 1
-                hilo["pc"] += 1
-
-                if res.get("fallo_pagina", False):
-                    hilo["estado"] = "BLOQUEADO"
-                    hilo["espera_fallo_memoria"] = 5
-                    if not any(th["estado"] == "LISTO" for th in p["hilos"]):
-                        p["estado"] = "BLOQUEADO"
-                        if p["prioridad"] < p["prioridad_original"]:
-                            p["prioridad"] = p["prioridad_original"]
-                        _en_ejecucion[cpu] = None
-                    else:
-                        p["estado"] = "LISTO"
-                        if p["prioridad"] < p["prioridad_original"]:
-                            p["prioridad"] = p["prioridad_original"]
-                        _colas[p["prioridad"]].append(pid_actual)
-                        _en_ejecucion[cpu] = None
-                else:
-                    if hilo["pc"] >= len(hilo["programa"]):
-                        hilo["estado"] = "TERMINADO"
-                        if all(th["estado"] == "TERMINADO" for th in p["hilos"]):
-                            terminar_proceso(pid_actual)
-                            _en_ejecucion[cpu] = None
-                        elif not any(th["estado"] == "LISTO" for th in p["hilos"]):
-                            p["estado"] = "BLOQUEADO"
-                            if p["prioridad"] < p["prioridad_original"]:
-                                p["prioridad"] = p["prioridad_original"]
-                            _en_ejecucion[cpu] = None
-                        else:
-                            p["estado"] = "LISTO"
-                            _colas[p["prioridad"]].append(pid_actual)
-                            _en_ejecucion[cpu] = None
-                    else:
-                        hilo["estado"] = "LISTO"
-                        p["estado"] = "LISTO"
-                        _colas[p["prioridad"]].append(pid_actual)
-                        _en_ejecucion[cpu] = None
-
-            elif tipo == "ES":
-                bloque = int(valor)
-                operacion = str(inst[2]) if len(inst) > 2 else "L"
-                try:
-                    disco.encolar_solicitud_disco(pid_actual, bloque, operacion)
-                except ErrorSistema:
-                    # Bloque u operación inválidos: termina solo al proceso culpable, como en RM3
-                    terminar_proceso(pid_actual)
-                    _en_ejecucion[cpu] = None
-                    continue
-                hilo["pc"] += 1
-                hilo["estado"] = "BLOQUEADO"
-                if not any(th["estado"] == "LISTO" for th in p["hilos"]):
-                    p["estado"] = "BLOQUEADO"
-                    if p["prioridad"] < p["prioridad_original"]:
-                        p["prioridad"] = p["prioridad_original"]
-                    _en_ejecucion[cpu] = None
-                else:
-                    p["estado"] = "LISTO"
-                    if p["prioridad"] < p["prioridad_original"]:
-                        p["prioridad"] = p["prioridad_original"]
-                    _colas[p["prioridad"]].append(pid_actual)
-                    _en_ejecucion[cpu] = None
-
-            elif tipo == "WAIT":
-                nombre = str(valor)
-                try:
-                    from minidc import sincronizacion
-                    adquirido = sincronizacion.semaforo_wait(nombre, pid_actual)
-                except NotImplementedError:
-                    adquirido = True
-                except ErrorSistema:
-                    terminar_proceso(pid_actual)
-                    _en_ejecucion[cpu] = None
-                    continue
-
-                if adquirido:
-                    p.setdefault("semaforos_adquiridos", []).append(nombre)
-                    hilo["pc"] += 1
-                    hilo["cpu_usada"] = hilo.get("cpu_usada", 0) + 1
-                    p["cpu_usada"] += 1
-                    hilo["espera_semaforo"] = None
-                    if hilo["pc"] >= len(hilo["programa"]):
-                        hilo["estado"] = "TERMINADO"
-                        if all(th["estado"] == "TERMINADO" for th in p["hilos"]):
-                            terminar_proceso(pid_actual)
-                            _en_ejecucion[cpu] = None
-                        elif not any(th["estado"] == "LISTO" for th in p["hilos"]):
-                            p["estado"] = "BLOQUEADO"
-                            if p["prioridad"] < p["prioridad_original"]:
-                                p["prioridad"] = p["prioridad_original"]
-                            _en_ejecucion[cpu] = None
-                        else:
-                            p["estado"] = "LISTO"
-                            p["espera_consecutiva"] = 0
-                            if p["prioridad"] < p["prioridad_original"]:
-                                p["prioridad"] = p["prioridad_original"]
-                            _colas[p["prioridad"]].append(pid_actual)
-                            _en_ejecucion[cpu] = None
-                    else:
-                        hilo["estado"] = "LISTO"
-                        p["estado"] = "LISTO"
-                        p["espera_consecutiva"] = 0
-                        if p["prioridad"] < p["prioridad_original"]:
-                            p["prioridad"] = p["prioridad_original"]
-                        _colas[p["prioridad"]].append(pid_actual)
-                        _en_ejecucion[cpu] = None
-                else:
-                    hilo["estado"] = "BLOQUEADO"
-                    hilo["espera_semaforo"] = nombre
-                    _espera_semaforos.setdefault(nombre, deque()).append((pid_actual, hilo["tid"]))
-                    if not any(th["estado"] == "LISTO" for th in p["hilos"]):
-                        p["estado"] = "BLOQUEADO"
-                        if p["prioridad"] < p["prioridad_original"]:
-                            p["prioridad"] = p["prioridad_original"]
-                        _en_ejecucion[cpu] = None
-                    else:
-                        p["estado"] = "LISTO"
-                        p["espera_consecutiva"] = 0
-                        if p["prioridad"] < p["prioridad_original"]:
-                            p["prioridad"] = p["prioridad_original"]
-                        _colas[p["prioridad"]].append(pid_actual)
-                        _en_ejecucion[cpu] = None
-
-            elif tipo == "SIGNAL":
-                nombre = str(valor)
-                if nombre in p.get("semaforos_adquiridos", []):
-                    p["semaforos_adquiridos"].remove(nombre)
-
-                cola_antes = []
-                try:
-                    from minidc import sincronizacion
-                    est = sincronizacion.estado_semaforo(nombre)
-                    if isinstance(est, dict):
-                        cola_antes = list(est.get("cola_espera", []))
-                except Exception:
-                    pass
-
-                ret_signal = None
-                try:
-                    from minidc import sincronizacion
-                    ret_signal = sincronizacion.semaforo_signal(nombre, pid_actual)
-                except NotImplementedError:
-                    pass
-                except ErrorSistema:
-                    terminar_proceso(pid_actual)
-                    _en_ejecucion[cpu] = None
-                    continue
-
-                pid_despertado = None
-                if isinstance(ret_signal, int):
-                    pid_despertado = ret_signal
-                elif cola_antes:
-                    cola_despues = []
-                    try:
-                        from minidc import sincronizacion
-                        est = sincronizacion.estado_semaforo(nombre)
-                        if isinstance(est, dict):
-                            cola_despues = list(est.get("cola_espera", []))
-                    except Exception:
-                        pass
-                    if len(cola_despues) < len(cola_antes):
-                        pid_despertado = cola_antes[0]
-
-                _despertar_por_semaforo(nombre, pid_despertado=pid_despertado)
-
-                hilo["pc"] += 1
-                hilo["cpu_usada"] = hilo.get("cpu_usada", 0) + 1
-                p["cpu_usada"] += 1
-                if hilo["pc"] >= len(hilo["programa"]):
-                    hilo["estado"] = "TERMINADO"
-                    if all(th["estado"] == "TERMINADO" for th in p["hilos"]):
-                        terminar_proceso(pid_actual)
-                        _en_ejecucion[cpu] = None
-                    elif not any(th["estado"] == "LISTO" for th in p["hilos"]):
-                        p["estado"] = "BLOQUEADO"
-                        if p["prioridad"] < p["prioridad_original"]:
-                            p["prioridad"] = p["prioridad_original"]
-                        _en_ejecucion[cpu] = None
-                    else:
-                        p["estado"] = "LISTO"
-                        p["espera_consecutiva"] = 0
-                        if p["prioridad"] < p["prioridad_original"]:
-                            p["prioridad"] = p["prioridad_original"]
-                        _colas[p["prioridad"]].append(pid_actual)
-                        _en_ejecucion[cpu] = None
-                else:
-                    hilo["estado"] = "LISTO"
-                    p["estado"] = "LISTO"
-                    p["espera_consecutiva"] = 0
-                    if p["prioridad"] < p["prioridad_original"]:
-                        p["prioridad"] = p["prioridad_original"]
-                    _colas[p["prioridad"]].append(pid_actual)
-                    _en_ejecucion[cpu] = None
-
-            else:
-                hilo["pc"] += 1
-                if hilo["pc"] >= len(hilo["programa"]):
-                    hilo["estado"] = "TERMINADO"
-                    if all(th["estado"] == "TERMINADO" for th in p["hilos"]):
-                        terminar_proceso(pid_actual)
-                        _en_ejecucion[cpu] = None
-                    elif not any(th["estado"] == "LISTO" for th in p["hilos"]):
-                        p["estado"] = "BLOQUEADO"
-                        if p["prioridad"] < p["prioridad_original"]:
-                            p["prioridad"] = p["prioridad_original"]
-                        _en_ejecucion[cpu] = None
-                    else:
-                        p["estado"] = "LISTO"
-                        _colas[p["prioridad"]].append(pid_actual)
-                        _en_ejecucion[cpu] = None
-                else:
-                    hilo["estado"] = "LISTO"
-                    p["estado"] = "LISTO"
-                    _colas[p["prioridad"]].append(pid_actual)
-                    _en_ejecucion[cpu] = None
+                candidatos = unidades_listos
+            tid_sel, hilo_sel = candidatos[0]
+            p["ultimo_tid_ejecutado"] = tid_sel
+            _ejecutar_unidad_multihilo(p, pid_actual, cpu, hilo_sel)
 
         # ---------------------------------------------------- Caso B: Proceso secuencial (sin hilos)
         else:
@@ -904,6 +848,7 @@ def planificar_y_ejecutar_cpu(reloj: int) -> None:
                     _en_ejecucion[cpu] = None
                     continue
                 p["estado"] = "BLOQUEADO"
+                p["espera_disco"] = True
                 p["pc"] += 1
                 if p["prioridad"] < p["prioridad_original"]:
                     p["prioridad"] = p["prioridad_original"]
@@ -946,45 +891,9 @@ def planificar_y_ejecutar_cpu(reloj: int) -> None:
 
             elif tipo == "SIGNAL":
                 nombre = str(valor)
-                if nombre in p.get("semaforos_adquiridos", []):
-                    p["semaforos_adquiridos"].remove(nombre)
-
-                cola_antes = []
-                try:
-                    from minidc import sincronizacion
-                    est = sincronizacion.estado_semaforo(nombre)
-                    if isinstance(est, dict):
-                        cola_antes = list(est.get("cola_espera", []))
-                except Exception:
-                    pass
-
-                ret_signal = None
-                try:
-                    from minidc import sincronizacion
-                    ret_signal = sincronizacion.semaforo_signal(nombre, pid_actual)
-                except NotImplementedError:
-                    pass
-                except ErrorSistema:
-                    terminar_proceso(pid_actual)
+                if not _ejecutar_signal(pid_actual, p, nombre):
                     _en_ejecucion[cpu] = None
                     continue
-
-                pid_despertado = None
-                if isinstance(ret_signal, int):
-                    pid_despertado = ret_signal
-                elif cola_antes:
-                    cola_despues = []
-                    try:
-                        from minidc import sincronizacion
-                        est = sincronizacion.estado_semaforo(nombre)
-                        if isinstance(est, dict):
-                            cola_despues = list(est.get("cola_espera", []))
-                    except Exception:
-                        pass
-                    if len(cola_despues) < len(cola_antes):
-                        pid_despertado = cola_antes[0]
-
-                _despertar_por_semaforo(nombre, pid_despertado=pid_despertado)
 
                 p["pc"] += 1
                 p["cpu_usada"] += 1
