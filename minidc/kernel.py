@@ -43,6 +43,11 @@ def iniciar_sistema(config: dict) -> None:
             sincronizacion.reiniciar(_config)
     except Exception:
         pass
+    try:
+        from minidc import consola
+        consola.reiniciar()     # directorio actual e historial de cada usuario
+    except AttributeError:
+        pass                    # en el primer import la consola todavía no termina de cargarse
 
 
 def apagar_sistema() -> dict:
@@ -188,11 +193,7 @@ def cargar_escenario(ruta_json: str) -> None:
             c_marcos = item.get("cuota_marcos", 4)
             prio = item.get("prioridad", 0)
         else:
-            nom = nom_raw if nom_raw is not None else str(prog_raw)
-            prog = []
-            mem_b = item.get("memoria_bytes", 4096)
-            c_marcos = item.get("cuota_marcos", 4)
-            prio = item.get("prioridad", 0)
+            raise ErrorNoExiste(f"El programa {prog_raw!r} no está en el catálogo del escenario")
 
         llegada_dict = {
             "tick": tick_prog,
